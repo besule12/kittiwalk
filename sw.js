@@ -1,11 +1,9 @@
 // Kittiwalk service worker — cache l'appli pour usage hors-ligne
-const CACHE = 'kittiwalk-v3';
+const CACHE = 'kittiwalk-v4';
 const ASSETS = [
   '.',
   'index.html',
   'manifest.json',
-  'stations.json',
-  'hotels.json',
   'icon-192.png',
   'icon-512.png'
 ];
