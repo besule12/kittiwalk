@@ -902,7 +902,9 @@ L.tileLayer('https://cache.kartverket.no/v1/wmts/1.0.0/topo/default/webmercator/
   maxZoom: 18,
   attribution: '&copy; <a href="https://www.kartverket.no/">Kartverket</a>'
 }).addTo(map);
-L.control.zoom({position:'bottomright'}).addTo(map);
+/* Pas de boutons + / - : ils se superposaient au bouton de localisation, en bas
+   a droite. Le zoom se fait au pincement sur telephone, a la molette ou au
+   double-clic sur ordinateur -- les boutons n'apportaient rien et genaient. */
 
 /* Le marqueur fait 32 px : un code long comme "cliff 1" n'y tient pas. On y
    affiche donc une abreviation ("C1"), le code complet restant celui utilise
