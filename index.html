@@ -790,10 +790,11 @@ const map = L.map('map', { zoomControl:false }).setView([69.6489, 18.9551], 15);
    2. Le zoom maximum reel est 18. Au-dela le serveur repond 400.
    3. L'attribution "Kartverket" est obligatoire (donnees ouvertes CC BY).
 
-   Couche "topograatone" = gris clair, choisi pour que les marqueurs de couleur
-   (vert / orange / rouge / gris fonce) restent lisibles. Pour un fond en
-   couleur, remplacer "topograatone" par "topo". */
-L.tileLayer('https://cache.kartverket.no/v1/wmts/1.0.0/topograatone/default/webmercator/{z}/{y}/{x}.png', {
+   Couche "topo" = carte topographique norvegienne en couleur. Les marqueurs
+   sont fonces avec texte blanc, ils restent donc lisibles dessus. Pour un fond
+   gris clair (plus contraste, tuiles plus legeres), remplacer "topo" par
+   "topograatone" -- meme serveur, rien d'autre a changer. */
+L.tileLayer('https://cache.kartverket.no/v1/wmts/1.0.0/topo/default/webmercator/{z}/{y}/{x}.png', {
   maxZoom: 18,
   attribution: '&copy; <a href="https://www.kartverket.no/">Kartverket</a>'
 }).addTo(map);
@@ -844,7 +845,52 @@ let HOTELS = [];
 let hotelMarkers = {};
 let currentHotel = null;
 const HOTEL_KEY = 'kittiwalk_hotels_v1';
-let hotelObs = loadStore(HOTEL_KEY, {});   // { "H3": { savedAt, ledges: { "1": {status, comment} } } }
+/* Ancien format : un seul enregistrement par hotel, ecrase a chaque tournee --
+   c'est la ou se trouvaient les donnees les plus riches (jusqu'a 807 ledges
+   statuees), et elles etaient perdues a chaque nouvelle visite.
+   Nouveau format : une LISTE de tournees par hotel, comme pour les stations.
+     { "H3": [ { id, hotel, savedAt, ledges }, ... ] }
+   Convention : savedAt === null signifie tournee EN COURS. L'hotel 5 se
+   remplit etage par etage avant validation, donc il a besoin d'un
+   enregistrement ouvert ; une tournee ouverte ne compte jamais comme faite. */
+let hotelObs = migrateHotelObs(loadStore(HOTEL_KEY, {}));
+
+function migrateHotelObs(raw){
+  const out = {};
+  Object.keys(raw || {}).forEach(k=>{
+    const v = raw[k];
+    const list = Array.isArray(v) ? v : (v ? [v] : []);
+    if(list.length) out[k] = list.map(o=> o && o.id ? o : Object.assign({ id: newObsId(), hotel: k }, o));
+  });
+  return out;
+}
+
+/* Derniere tournee VALIDEE d'un hotel. Les tournees en cours sont ignorees,
+   sinon un brouillon abandonne ferait passer l'hotel en vert. */
+function latestHotelObs(key){
+  const list = hotelObs[key];
+  if(!list) return undefined;
+  for(let i = list.length - 1; i >= 0; i--){ if(list[i].savedAt) return list[i]; }
+  return undefined;
+}
+
+/* Tournee en cours, sans en creer une : pour le preremplissage. */
+function peekOpenHotelRound(key){
+  const list = hotelObs[key];
+  const last = list && list[list.length - 1];
+  return (last && !last.savedAt) ? last : undefined;
+}
+
+/* Tournee en cours d'un hotel, creee au besoin (hotel 5 uniquement). */
+function openHotelRound(key){
+  const list = hotelObs[key] || (hotelObs[key] = []);
+  let last = list[list.length - 1];
+  if(!last || last.savedAt){
+    last = { id: newObsId(), hotel: key, savedAt: null, ledges: {} };
+    list.push(last);
+  }
+  return last;
+}
 
 const STATUS_OPTIONS = [
   'Totally empty',
@@ -858,7 +904,8 @@ const STATUS_OPTIONS = [
 function hotelFreshness(id){
   const h = HOTELS.find(x=> x.id === id);
   const key = (h && h.group) ? h.group : id;
-  const d = daysSince(hotelObs[key] && hotelObs[key].savedAt);
+  const lastRound = latestHotelObs(key);
+  const d = daysSince(lastRound && lastRound.savedAt);
   if(d <= 2) return 'fresh';
   if(d === 3) return 'stale';
   if(d <= 6) return 'late';
@@ -1720,7 +1767,8 @@ function groupMembers(gid){
   return HOTELS.filter(h=> h.group === gid);
 }
 function groupFreshness(gid){
-  const d = daysSince(hotelObs[gid] && hotelObs[gid].savedAt);
+  const lastRound = latestHotelObs(gid);
+  const d = daysSince(lastRound && lastRound.savedAt);
   if(d <= 2) return 'fresh';
   if(d === 3) return 'stale';
   if(d <= 6) return 'late';
@@ -1733,7 +1781,8 @@ function openSidesSheet(gid){
   if(!members.length) return;
   document.getElementById('sidesName').textContent = members[0].groupName || gid;
 
-  const saved = hotelObs[gid] && hotelObs[gid].sections;
+  const lastRound = latestHotelObs(gid);
+  const saved = lastRound && lastRound.sections;
   sidesDraft = {};
   // ordre des captures : par face, puis par hotel (Land 6, Land 7, Top 6, Top 7, Sea 6, Sea 7)
   const sides = members[0].sides;
@@ -1807,7 +1856,11 @@ document.getElementById('saveSides').addEventListener('click', ()=>{
     }
   });
   if(!Object.keys(sections).length){ showToast('Rien a enregistrer'); return; }
-  hotelObs[currentGroup] = { savedAt: new Date().toISOString(), sections };
+  if(!hotelObs[currentGroup]) hotelObs[currentGroup] = [];
+  hotelObs[currentGroup].push({
+    id: newObsId(), hotel: currentGroup,
+    savedAt: new Date().toISOString(), sections
+  });
   saveStore(HOTEL_KEY, hotelObs);
   refreshHotelMarkers();
   closeSheets();
@@ -1936,8 +1989,10 @@ function openLeveledHotel(found, levelId, unitId){
 
   renderCrumb(lv.label, curUnit);
 
-  // saisie en cours
-  const saved = hotelObs['H5'] && hotelObs['H5'].ledges;
+  // saisie en cours : la tournee ouverte si elle existe, sinon la derniere validee
+  const h5Open = peekOpenHotelRound('H5');
+  const h5Last = latestHotelObs('H5');
+  const saved = (h5Open && h5Open.ledges) || (h5Last && h5Last.ledges);
   ledgeDraft = {};
   currentHotel.ledges.forEach(l=>{
     const prev = saved && saved[l.key];
@@ -1991,7 +2046,10 @@ function openHotelSheet(id){
   document.getElementById('hotelName').textContent =
     currentHotel.name + ' \u2014 ' + currentHotel.ledges.length + ' ledges' +
     (currentHotel.panels ? ' \u2014 ' + currentHotel.panels.length + ' panels' : '');
-  const saved = hotelObs[id];
+  // NB : on lit sous currentHotel.id (la cle de stockage, ex "G1112"), pas sous
+  // l'id de l'hotel ("H11"). L'ancien code lisait sous id et ne retrouvait donc
+  // jamais les donnees des hotels groupes -- elles semblaient perdues.
+  const saved = latestHotelObs(currentHotel.id);
   ledgeDraft = {};
   currentHotel.ledges.forEach(l=>{
     const k = ledgeKey(l);
@@ -2375,12 +2433,11 @@ function updateMissing(){
 /* conserve la saisie du pied courant avant de changer de vue */
 function saveLevelDraft(){
   if(!levelHotel || !currentHotel) return;
-  const store = hotelObs['H5'] || { savedAt: null, ledges: {} };
+  const store = openHotelRound('H5');   // tournee en cours, creee au besoin
   currentHotel.ledges.forEach(l=>{
     const d = ledgeDraft[l.key];
     if(d && d.status) store.ledges[l.key] = { label: ledgeLabel(l), status: d.status, comment: d.comment };
   });
-  hotelObs['H5'] = store;
 }
 
 document.getElementById('ledgeSearch').addEventListener('input', (e)=> renderLedges(e.target.value));
@@ -2417,11 +2474,12 @@ document.getElementById('closeHotel').addEventListener('click', closeSheets);
 document.getElementById('saveHotel').addEventListener('click', ()=>{
   if(levelHotel && currentHotel.storeId === 'H5'){
     saveLevelDraft();
-    hotelObs['H5'].savedAt = new Date().toISOString();
+    const round = openHotelRound('H5');       // cloture la tournee en cours
+    round.savedAt = new Date().toISOString();
     saveStore(HOTEL_KEY, hotelObs);
     refreshHotelMarkers();
     closeSheets();
-    showToast('Hotel 5 enregistre (' + Object.keys(hotelObs['H5'].ledges).length + ' ledges)');
+    showToast('Hotel 5 enregistre (' + Object.keys(round.ledges).length + ' ledges)');
     return;
   }
   const ledges = {};
@@ -2433,7 +2491,12 @@ document.getElementById('saveHotel').addEventListener('click', ()=>{
     }
   });
   if(Object.keys(ledges).length === 0){ showToast('Aucune ledge remplie'); return; }
-  hotelObs[currentHotel.id] = { savedAt: new Date().toISOString(), ledges };
+  const hkey = currentHotel.id;
+  if(!hotelObs[hkey]) hotelObs[hkey] = [];
+  hotelObs[hkey].push({
+    id: newObsId(), hotel: hkey,
+    savedAt: new Date().toISOString(), ledges
+  });
   saveStore(HOTEL_KEY, hotelObs);
   refreshHotelMarkers();
   closeSheets();
