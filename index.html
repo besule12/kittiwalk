@@ -804,6 +804,14 @@ function effectiveStations(){
     .map(s=> moved[s.station] ? Object.assign({}, s, moved[s.station]) : s);
 }
 
+/* Definition d'une station MEME si elle a ete retiree de la carte.
+   Une station archivee garde des observations historiques : sans cela, leurs
+   coordonnees sortaient vides de l'export et les points devenaient
+   inexploitables dans QGIS. */
+function stationDefAny(code){
+  return ALL_STATIONS.concat(stationEdits.added).find(s=> s.station === code);
+}
+
 function adminPendingCount(){
   return stationEdits.added.length + stationEdits.removed.length
        + Object.keys(stationEdits.moved).length;
@@ -3076,15 +3084,20 @@ function openAdminStation(code){
           + (cree ? 'ajoutee par un administrateur\n' : 'station d origine\n');
   if(nbObs) msg += '\nATTENTION : ' + nbObs + ' observation(s) enregistree(s) sur cette station.\n'
                  + 'Elles ne sont pas supprimees, mais la station disparait de la carte.\n';
-  msg += '\nOK = retirer cette station\nAnnuler = ne rien faire';
+  msg += '\nElle sera ARCHIVEE, pas supprimee : "Restaurer" la remet, et elle\n'
+       + 'reste dans le referentiel exporte avec active:false, donc reactivable\n'
+       + 'une saison suivante.\n'
+       + '\nOK = archiver cette station\nAnnuler = ne rien faire';
   if(!confirm(msg)) return;
-  if(cree) stationEdits.added = stationEdits.added.filter(s=> s.station !== code);
-  else if(stationEdits.removed.indexOf(code) === -1) stationEdits.removed.push(code);
-  delete stationEdits.moved[code];
+  // On archive, jamais on ne supprime -- y compris une station creee par un
+  // administrateur. Un suivi pluriannuel doit pouvoir reactiver une station
+  // l'annee suivante, et ses observations passees la referencent. C'est deja la
+  // convention du referentiel, ou 5 stations portent active:false.
+  if(stationEdits.removed.indexOf(code) === -1) stationEdits.removed.push(code);
   saveStationEdits();
   applySite(currentSite);
   updateAdminBar();
-  showToast('Station ' + code + ' retiree');
+  showToast('Station ' + code + ' archivee');
 }
 
 /* Ajout : on arme le bouton, puis on touche la carte a l'emplacement voulu */
@@ -3100,6 +3113,14 @@ map.on('click', (e)=>{
   document.getElementById('adminAddBtn').classList.remove('armed');
   const code = (prompt('Code de la nouvelle station (ex : 35, 16h, cliff 4)') || '').trim();
   if(!code) return;
+  // Code d'une station archivee : on la reactive au lieu d'en creer un doublon.
+  // C'est le geste normal quand une station revient une saison suivante.
+  if(stationEdits.removed.indexOf(code) !== -1){
+    stationEdits.removed = stationEdits.removed.filter(c=> c !== code);
+    saveStationEdits(); applySite(currentSite); updateAdminBar();
+    showToast('Station ' + code + ' reactivee (elle etait archivee)');
+    return;
+  }
   if(effectiveStations().some(s=> s.station === code)){
     showToast('Le code ' + code + ' existe deja'); return;
   }
@@ -3127,8 +3148,17 @@ document.getElementById('adminRestoreBtn').addEventListener('click', ()=>{
 
 /* Export du referentiel complet, a publier pour que tout le monde l'ait */
 document.getElementById('adminExportBtn').addEventListener('click', ()=>{
-  const liste = effectiveStations().map(s=>{
-    const o = { station:s.station, lat:s.lat, lon:s.lon, active:s.active !== false };
+  // On exporte AUSSI les stations archivees, avec active:false, au lieu de les
+  // omettre. Le referentiel ne doit jamais perdre une station : sinon on ne peut
+  // plus la reactiver une saison suivante, et les observations historiques qui
+  // la referencent perdent leurs coordonnees.
+  const archivees = new Set(stationEdits.removed);
+  const liste = ALL_STATIONS.concat(stationEdits.added).map(s=>{
+    const mv = stationEdits.moved[s.station];
+    const o = { station: s.station,
+                lat: mv ? mv.lat : s.lat,
+                lon: mv ? mv.lon : s.lon,
+                active: archivees.has(s.station) ? false : (s.active !== false) };
     if(s.site) o.site = s.site;
     if(s.form) o.form = s.form;
     return o;
@@ -3175,7 +3205,7 @@ function buildCsv(){
 
   // 1. observations de stations
   Object.keys(observations).forEach(code=>{
-    const d = stationDef(code) || {};
+    const d = stationDefAny(code) || {};
     observations[code].forEach(o=>{
       const [dt, hr] = dateParts(o.timestamp);
       rows.push(['station', code, siteOf(d), d.lat || '', d.lon || '', dt, hr,
@@ -3205,7 +3235,7 @@ function buildCsv(){
 
   // 3. signalements d'anomalies
   anomalies.forEach(a=>{
-    const d = stationDef(a.station) || {};
+    const d = stationDefAny(a.station) || {};
     const [dt, hr] = dateParts(a.timestamp);
     rows.push(['anomaly', a.station, siteOf(d), d.lat || '', d.lon || '', dt, hr,
                '', '', '', '', '', '', a.notes || '', '']);
