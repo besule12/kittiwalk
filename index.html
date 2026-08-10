@@ -2775,7 +2775,7 @@ function openStationSheet(code){
   document.getElementById('aonInput').value = ex ? ex.aon : '';
   document.getElementById('stationNotes').value = ex ? ex.notes : '';
   updateCharCount();
-  stationPhotosBuffer = ex ? [...ex.photos] : [];
+  stationPhotosBuffer = ex ? [...(ex.photos || [])] : [];
   renderPhotoRow('stationPhotoRow', stationPhotosBuffer, 'stationPhotoFile');
   updateSubmitState();
   openSheet(stationSheet);
