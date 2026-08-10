@@ -52,8 +52,8 @@
     padding:7px 12px; border-radius:999px;
     font-size:13px; font-weight:500;
     border:1px solid var(--line);
-    /* l'appui long sur ce compteur ouvre le mode admin : sans ces deux regles,
-       iOS affiche la selection de texte a la place et le geste ne marche pas */
+    /* compteur non selectionnable : evite la selection de texte accidentelle
+       quand on manipule l'appli d'une main sur le terrain */
     -webkit-touch-callout:none; -webkit-user-select:none; user-select:none;
   }
   .stat-pill b{color:var(--ok);}
@@ -416,6 +416,14 @@
     height:38px; border-radius:999px; padding:0 14px;
     font-size:12.5px; font-weight:500;
   }
+  /* Entree du mode administrateur : visible, mais protegee par un code.
+     Le geste cache d'avant etait introuvable sur telephone. */
+  #adminKeyBtn{
+    bottom:176px; left:16px;
+    height:34px; border-radius:999px; padding:0 12px;
+    font-size:12px; font-weight:500; opacity:.75;
+  }
+  #adminKeyBtn.hidden{ display:none; }
 
   /* ---------- SHEET / CITY FORM ---------- */
   .sheet-backdrop{
@@ -610,6 +618,7 @@
 <button class="fab" id="anomalyBtn">&#128247; Report</button>
 <button class="fab" id="exportBtn">&#11015; Export JSON</button>
 <button class="fab" id="exportCsvBtn">&#128202; Export CSV</button>
+<button class="fab" id="adminKeyBtn">&#128273; Admin</button>
 
 <button id="legendBtn" title="L&#233;gende">&#127912;</button>
 <div id="legend">
@@ -3029,15 +3038,16 @@ function updateAdminBar(){
 function activateAdmin(){
   adminMode = true;
   document.getElementById('adminBar').classList.add('on');
+  document.getElementById('adminKeyBtn').classList.add('hidden');
   applySite(currentSite);          // rebalaye les marqueurs en mode deplacable
   updateAdminBar();
 }
 
 function enterAdmin(){
   if(adminMode) return;
-  const p = prompt('Mot de passe administrateur');
+  const p = prompt('Code administrateur\n\nPermet d ajouter, deplacer et retirer des stations.');
   if(p === null) return;
-  if(p.trim().toLowerCase() !== ADMIN_PASS){ showToast('Mot de passe incorrect'); return; }
+  if(p.trim().toLowerCase() !== ADMIN_PASS){ showToast('Code incorrect'); return; }
   // On retient l'autorisation sur cet appareil : sans ca il fallait retaper le
   // mot de passe a chaque ouverture de l'appli, et le mode semblait disparu.
   try{ localStorage.setItem(ADMIN_ON_KEY, '1'); }catch(e){}
@@ -3051,6 +3061,7 @@ function exitAdmin(){
   try{ localStorage.removeItem(ADMIN_ON_KEY); }catch(e){}
   document.getElementById('adminAddBtn').classList.remove('armed');
   document.getElementById('adminBar').classList.remove('on');
+  document.getElementById('adminKeyBtn').classList.remove('hidden');
   applySite(currentSite);
   showToast('Mode administrateur quitte');
 }
@@ -3135,23 +3146,16 @@ document.getElementById('adminExportBtn').addEventListener('click', ()=>{
 
 document.getElementById('adminExitBtn').addEventListener('click', exitAdmin);
 
-/* Entree dans le mode admin, trois chemins :
-   - l'appareil a deja ete autorise (le mode survit a la fermeture de l'appli) ;
-   - ?admin=1 dans l'adresse ;
-   - appui long sur le compteur en haut a droite. */
+/* Entree dans le mode admin. Le bouton "Admin" est visible sur tous les
+   telephones et demande un code : c'est le chemin normal. Le geste cache
+   precedent (appui long) etait introuvable en pratique, il a ete retire.
+   ?admin=1 reste accepte, pratique pour un lien mis en favori.
+   L'autorisation est retenue par appareil : une fois le code saisi, le mode
+   revient a chaque ouverture jusqu'au clic sur Quitter. */
+document.getElementById('adminKeyBtn').addEventListener('click', enterAdmin);
+
 if(localStorage.getItem(ADMIN_ON_KEY) === '1') activateAdmin();
 else if(/[?&]admin=1/.test(location.search)) enterAdmin();
-
-(function(){
-  const pill = document.querySelector('.stat-pill');
-  let t = null;
-  const start = ()=>{ stop(); t = setTimeout(enterAdmin, 700); };
-  const stop  = ()=>{ if(t){ clearTimeout(t); t = null; } };
-  // NB : on n'annule PAS sur touchmove. Un doigt bouge toujours de quelques
-  // pixels sur un ecran, et l'appui long ne se declenchait jamais sur telephone.
-  ['mousedown','touchstart'].forEach(ev=> pill.addEventListener(ev, start));
-  ['mouseup','mouseleave','touchend','touchcancel'].forEach(ev=> pill.addEventListener(ev, stop));
-})();
 
 /* ================= EXPORT CSV (donnees reutilisables) =================
    Le JSON sert de sauvegarde complete. Le CSV sert a travailler : une ligne
