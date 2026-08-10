@@ -52,6 +52,9 @@
     padding:7px 12px; border-radius:999px;
     font-size:13px; font-weight:500;
     border:1px solid var(--line);
+    /* l'appui long sur ce compteur ouvre le mode admin : sans ces deux regles,
+       iOS affiche la selection de texte a la place et le geste ne marche pas */
+    -webkit-touch-callout:none; -webkit-user-select:none; user-select:none;
   }
   .stat-pill b{color:var(--ok);}
   /* bascule entre les deux sites de comptage (centre-ville / falaises) */
@@ -408,6 +411,11 @@
     height:38px; border-radius:999px; padding:0 14px;
     font-size:12.5px; font-weight:500;
   }
+  #exportCsvBtn{
+    bottom:130px; left:16px;
+    height:38px; border-radius:999px; padding:0 14px;
+    font-size:12.5px; font-weight:500;
+  }
 
   /* ---------- SHEET / CITY FORM ---------- */
   .sheet-backdrop{
@@ -601,6 +609,7 @@
 <button class="fab" id="locateBtn" title="Me localiser">&#128205;</button>
 <button class="fab" id="anomalyBtn">&#128247; Report</button>
 <button class="fab" id="exportBtn">&#11015; Export JSON</button>
+<button class="fab" id="exportCsvBtn">&#128202; Export CSV</button>
 
 <button id="legendBtn" title="L&#233;gende">&#127912;</button>
 <div id="legend">
@@ -774,8 +783,9 @@ function siteOf(st){ return st.site || 'city'; }
 
    Le mot de passe n'est pas une securite : le code de l'appli est public, donc
    lisible. Il evite seulement qu'un benevole entre dans ce mode par hasard. */
-const ADMIN_KEY  = 'kittiwalk_stations_admin_v1';
-const ADMIN_PASS = 'krykkje';
+const ADMIN_KEY    = 'kittiwalk_stations_admin_v1';
+const ADMIN_ON_KEY = 'kittiwalk_admin_on';
+const ADMIN_PASS   = 'krykkje';
 let adminMode = false;
 let pendingAdd = false;
 let stationEdits = loadStore(ADMIN_KEY, { added: [], removed: [], moved: {} });
@@ -3015,21 +3025,30 @@ function updateAdminBar(){
     stationEdits.removed.length ? '' : 'none';
 }
 
+/* Active le mode sans redemander le mot de passe. */
+function activateAdmin(){
+  adminMode = true;
+  document.getElementById('adminBar').classList.add('on');
+  applySite(currentSite);          // rebalaye les marqueurs en mode deplacable
+  updateAdminBar();
+}
+
 function enterAdmin(){
   if(adminMode) return;
   const p = prompt('Mot de passe administrateur');
   if(p === null) return;
   if(p.trim().toLowerCase() !== ADMIN_PASS){ showToast('Mot de passe incorrect'); return; }
-  adminMode = true;
-  document.getElementById('adminBar').classList.add('on');
+  // On retient l'autorisation sur cet appareil : sans ca il fallait retaper le
+  // mot de passe a chaque ouverture de l'appli, et le mode semblait disparu.
+  try{ localStorage.setItem(ADMIN_ON_KEY, '1'); }catch(e){}
   closeSheets();
-  applySite(currentSite);          // rebalaye les marqueurs en mode deplacable
-  updateAdminBar();
+  activateAdmin();
   showToast('Mode administrateur actif');
 }
 
 function exitAdmin(){
   adminMode = false; pendingAdd = false;
+  try{ localStorage.removeItem(ADMIN_ON_KEY); }catch(e){}
   document.getElementById('adminAddBtn').classList.remove('armed');
   document.getElementById('adminBar').classList.remove('on');
   applySite(currentSite);
@@ -3116,17 +3135,96 @@ document.getElementById('adminExportBtn').addEventListener('click', ()=>{
 
 document.getElementById('adminExitBtn').addEventListener('click', exitAdmin);
 
-/* Entree dans le mode admin : ?admin=1 dans l'adresse, ou appui long sur le
-   compteur en haut a droite (pratique sur telephone). */
-if(/[?&]admin=1/.test(location.search)) enterAdmin();
+/* Entree dans le mode admin, trois chemins :
+   - l'appareil a deja ete autorise (le mode survit a la fermeture de l'appli) ;
+   - ?admin=1 dans l'adresse ;
+   - appui long sur le compteur en haut a droite. */
+if(localStorage.getItem(ADMIN_ON_KEY) === '1') activateAdmin();
+else if(/[?&]admin=1/.test(location.search)) enterAdmin();
+
 (function(){
   const pill = document.querySelector('.stat-pill');
   let t = null;
-  const start = ()=>{ t = setTimeout(enterAdmin, 800); };
+  const start = ()=>{ stop(); t = setTimeout(enterAdmin, 700); };
   const stop  = ()=>{ if(t){ clearTimeout(t); t = null; } };
+  // NB : on n'annule PAS sur touchmove. Un doigt bouge toujours de quelques
+  // pixels sur un ecran, et l'appui long ne se declenchait jamais sur telephone.
   ['mousedown','touchstart'].forEach(ev=> pill.addEventListener(ev, start));
-  ['mouseup','mouseleave','touchend','touchcancel','touchmove'].forEach(ev=> pill.addEventListener(ev, stop));
+  ['mouseup','mouseleave','touchend','touchcancel'].forEach(ev=> pill.addEventListener(ev, stop));
 })();
+
+/* ================= EXPORT CSV (donnees reutilisables) =================
+   Le JSON sert de sauvegarde complete. Le CSV sert a travailler : une ligne
+   par observation, avec les coordonnees, donc ouvrable directement dans Excel
+   ou LibreOffice, et chargeable dans QGIS comme couche de points. */
+function csvCell(v){
+  const s = (v === null || v === undefined) ? '' : String(v);
+  return /[";\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+
+function buildCsv(){
+  const SEP = ';';   // Excel en francais attend le point-virgule, pas la virgule
+  const rows = [['record_type','station','site','lat','lon','date','heure',
+                 'observers','adults','aon','chicks','ledge','status','notes','id']];
+  const dateParts = iso=>{
+    const t = new Date(iso);
+    return [t.toISOString().slice(0,10), t.toISOString().slice(11,19)];
+  };
+
+  // 1. observations de stations
+  Object.keys(observations).forEach(code=>{
+    const d = stationDef(code) || {};
+    observations[code].forEach(o=>{
+      const [dt, hr] = dateParts(o.timestamp);
+      rows.push(['station', code, siteOf(d), d.lat || '', d.lon || '', dt, hr,
+                 o.observers, o.adults, o.aon, '', '', '', o.notes || '', o.id || '']);
+    });
+  });
+
+  // 2. hotels : une ligne par corniche, ou par face selon le type de formulaire
+  Object.keys(hotelObs).forEach(key=>{
+    const h = HOTELS.find(x=> x.id === key || x.group === key) || {};
+    hotelObs[key].forEach(r=>{
+      if(!r.savedAt) return;                     // tournee non validee : on ignore
+      const [dt, hr] = dateParts(r.savedAt);
+      if(r.ledges) Object.keys(r.ledges).forEach(k=>{
+        const L = r.ledges[k];
+        rows.push(['hotel_ledge', key, 'city', h.lat || '', h.lon || '', dt, hr,
+                   '', '', '', '', L.label || k, L.status || '', L.comment || '', r.id || '']);
+      });
+      if(r.sections) Object.keys(r.sections).forEach(k=>{
+        const S = r.sections[k];
+        // "nests" du formulaire par face = des nids occupes, donc colonne aon
+        rows.push(['hotel_side', key, 'city', h.lat || '', h.lon || '', dt, hr,
+                   '', S.adults, S.nests, S.chicks, S.side || k, '', S.comment || '', r.id || '']);
+      });
+    });
+  });
+
+  // 3. signalements d'anomalies
+  anomalies.forEach(a=>{
+    const d = stationDef(a.station) || {};
+    const [dt, hr] = dateParts(a.timestamp);
+    rows.push(['anomaly', a.station, siteOf(d), d.lat || '', d.lon || '', dt, hr,
+               '', '', '', '', '', '', a.notes || '', '']);
+  });
+
+  return rows.map(r=> r.map(csvCell).join(SEP)).join('\r\n');
+}
+
+document.getElementById('exportCsvBtn').addEventListener('click', ()=>{
+  const csv = buildCsv();
+  const lignes = csv.split('\r\n').length - 1;
+  if(lignes === 0){ showToast('Rien a exporter pour l instant'); return; }
+  // Le BOM est VOULU ici : sans lui, Excel affiche mal les accents d'un UTF-8.
+  const blob = new Blob(['﻿' + csv], {type:'text/csv;charset=utf-8'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'kittiwalk_' + new Date().toISOString().slice(0,10) + '.csv';
+  a.click();
+  URL.revokeObjectURL(a.href);
+  showToast(lignes + ' ligne(s) exportee(s) en CSV');
+});
 
 /* ---------------- G&#201;OLOCALISATION ---------------- */
 let userMarker = null;
