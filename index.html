@@ -66,6 +66,24 @@
     cursor:pointer; -webkit-tap-highlight-color:transparent;
   }
   .site-btn.is-on{ background:var(--ink); color:var(--white); }
+  /* barre du mode administrateur : volontairement voyante, pour qu'on ne
+     puisse pas croire qu'on est en train de compter des oiseaux */
+  #adminBar{
+    display:none; position:absolute; top:56px; left:0; right:0; z-index:1001;
+    align-items:center; gap:8px; flex-wrap:wrap;
+    padding:8px 12px; background:#FFD166;
+    border-bottom:1px solid rgba(0,0,0,0.12);
+    font-size:13px; color:#412402;
+  }
+  #adminBar.on{ display:flex; }
+  #adminBar b{ font-weight:700; letter-spacing:.4px; }
+  #adminBar button{
+    border:1px solid rgba(0,0,0,0.2); background:var(--white); color:var(--ink);
+    padding:5px 10px; border-radius:999px; font-size:12px; font-weight:600;
+    cursor:pointer; -webkit-tap-highlight-color:transparent;
+  }
+  #adminBar button.armed{ background:var(--ink); color:var(--white); }
+  #adminBar .spacer{ flex:1 1 auto; }
 
   /* ---------- MAP ---------- */
   #map{flex:1; width:100%; height:100%;}
@@ -568,6 +586,16 @@
   <div class="stat-pill"><b id="doneCount">0</b>/<span id="totalCount">0</span> stations</div>
 </header>
 
+<div id="adminBar">
+  <b>ADMIN</b>
+  <span id="adminStatus"></span>
+  <span class="spacer"></span>
+  <button type="button" id="adminAddBtn">+ Station</button>
+  <button type="button" id="adminRestoreBtn">Restaurer</button>
+  <button type="button" id="adminExportBtn">&#11015; stations.json</button>
+  <button type="button" id="adminExitBtn">Quitter</button>
+</div>
+
 <div id="map"></div>
 
 <button class="fab" id="locateBtn" title="Me localiser">&#128205;</button>
@@ -734,6 +762,43 @@ let ALL_STATIONS = [];  // toutes, tous sites, y compris les inactives (archives
    bascule donc d'un site a l'autre, et chacun garde son propre compteur. */
 let currentSite = 'city';
 function siteOf(st){ return st.site || 'city'; }
+
+/* ---------------- MODE ADMINISTRATEUR ----------------
+   Permet d'ajouter, deplacer et retirer des stations depuis l'appli, sans
+   editer le fichier a la main.
+
+   Limite a enoncer clairement : les modifications sont enregistrees sur CET
+   appareil. Sans serveur partage, une station ajoutee ici n'apparait pas chez
+   les autres benevoles avant d'avoir ete exportee et publiee. Le bouton
+   d'export produit le stations.json a mettre en ligne.
+
+   Le mot de passe n'est pas une securite : le code de l'appli est public, donc
+   lisible. Il evite seulement qu'un benevole entre dans ce mode par hasard. */
+const ADMIN_KEY  = 'kittiwalk_stations_admin_v1';
+const ADMIN_PASS = 'krykkje';
+let adminMode = false;
+let pendingAdd = false;
+let stationEdits = loadStore(ADMIN_KEY, { added: [], removed: [], moved: {} });
+if(!stationEdits.added)   stationEdits.added = [];
+if(!stationEdits.removed) stationEdits.removed = [];
+if(!stationEdits.moved)   stationEdits.moved = {};
+
+function saveStationEdits(){ saveStore(ADMIN_KEY, stationEdits); }
+
+/* Liste effective : stations embarquees + ajouts de l'admin, moins les
+   retraits, avec les deplacements appliques. */
+function effectiveStations(){
+  const removed = new Set(stationEdits.removed);
+  const moved = stationEdits.moved;
+  return ALL_STATIONS.concat(stationEdits.added)
+    .filter(s=> !removed.has(s.station))
+    .map(s=> moved[s.station] ? Object.assign({}, s, moved[s.station]) : s);
+}
+
+function adminPendingCount(){
+  return stationEdits.added.length + stationEdits.removed.length
+       + Object.keys(stationEdits.moved).length;
+}
 // charg&#233;es depuis stations.json (modifiable sur GitHub sans toucher au code)
 
 /* ---------------- PERSISTANCE (stockage local du t&#233;l&#233;phone) ---------------- */
@@ -859,8 +924,18 @@ const anomalySelect = document.getElementById('anomalyStation');
 
 function buildStations(){
   STATIONS.forEach(st=>{
-    const m = L.marker([st.lat, st.lon], { icon: makeStationIcon(st.station) }).addTo(map);
-    m.on('click', ()=> openStationSheet(st.station));
+    const m = L.marker([st.lat, st.lon],
+      { icon: makeStationIcon(st.station), draggable: adminMode }).addTo(map);
+    // en mode admin, toucher un marqueur ouvre les actions admin, pas le comptage
+    m.on('click', ()=> adminMode ? openAdminStation(st.station) : openStationSheet(st.station));
+    if(adminMode){
+      m.on('dragend', ()=>{
+        const p = m.getLatLng();
+        stationEdits.moved[st.station] = { lat:+p.lat.toFixed(6), lon:+p.lng.toFixed(6) };
+        saveStationEdits(); updateAdminBar();
+        showToast('Station ' + st.station + ' deplacee');
+      });
+    }
     stationMarkers[st.station] = m;
     [stationSelect, anomalySelect].forEach(sel=>{
       const o = document.createElement('option');
@@ -892,7 +967,7 @@ function applySite(site){
     sel.value = ''; sel.classList.remove('filled');
   });
   stationFormCode = null;
-  STATIONS = ALL_STATIONS.filter(s=> s.active !== false && siteOf(s) === site);
+  STATIONS = effectiveStations().filter(s=> s.active !== false && siteOf(s) === site);
   document.querySelectorAll('.site-btn').forEach(b=>
     b.classList.toggle('is-on', b.dataset.site === site));
   buildStations();
@@ -2929,6 +3004,130 @@ document.querySelectorAll('.site-btn').forEach(b=>{
   });
 });
 
+/* ================= MODE ADMINISTRATEUR ================= */
+
+function updateAdminBar(){
+  const n = adminPendingCount();
+  document.getElementById('adminStatus').textContent = n === 0
+    ? 'touche un marqueur pour le retirer, glisse-le pour le deplacer'
+    : n + ' modification(s) non publiee(s) : pense a exporter';
+  document.getElementById('adminRestoreBtn').style.display =
+    stationEdits.removed.length ? '' : 'none';
+}
+
+function enterAdmin(){
+  if(adminMode) return;
+  const p = prompt('Mot de passe administrateur');
+  if(p === null) return;
+  if(p.trim().toLowerCase() !== ADMIN_PASS){ showToast('Mot de passe incorrect'); return; }
+  adminMode = true;
+  document.getElementById('adminBar').classList.add('on');
+  closeSheets();
+  applySite(currentSite);          // rebalaye les marqueurs en mode deplacable
+  updateAdminBar();
+  showToast('Mode administrateur actif');
+}
+
+function exitAdmin(){
+  adminMode = false; pendingAdd = false;
+  document.getElementById('adminAddBtn').classList.remove('armed');
+  document.getElementById('adminBar').classList.remove('on');
+  applySite(currentSite);
+  showToast('Mode administrateur quitte');
+}
+
+/* Actions sur une station existante */
+function openAdminStation(code){
+  const def = stationDef(code);
+  if(!def) return;
+  const cree = stationEdits.added.some(s=> s.station === code);
+  const nbObs = (observations[code] || []).length;
+  let msg = 'Station ' + code + '\n'
+          + 'lat ' + def.lat + '   lon ' + def.lon + '\n'
+          + 'site : ' + siteOf(def) + (def.form === 'cliff' ? '   (formulaire falaise)' : '') + '\n'
+          + (cree ? 'ajoutee par un administrateur\n' : 'station d origine\n');
+  if(nbObs) msg += '\nATTENTION : ' + nbObs + ' observation(s) enregistree(s) sur cette station.\n'
+                 + 'Elles ne sont pas supprimees, mais la station disparait de la carte.\n';
+  msg += '\nOK = retirer cette station\nAnnuler = ne rien faire';
+  if(!confirm(msg)) return;
+  if(cree) stationEdits.added = stationEdits.added.filter(s=> s.station !== code);
+  else if(stationEdits.removed.indexOf(code) === -1) stationEdits.removed.push(code);
+  delete stationEdits.moved[code];
+  saveStationEdits();
+  applySite(currentSite);
+  updateAdminBar();
+  showToast('Station ' + code + ' retiree');
+}
+
+/* Ajout : on arme le bouton, puis on touche la carte a l'emplacement voulu */
+document.getElementById('adminAddBtn').addEventListener('click', ()=>{
+  pendingAdd = !pendingAdd;
+  document.getElementById('adminAddBtn').classList.toggle('armed', pendingAdd);
+  if(pendingAdd) showToast('Touche la carte a l endroit de la nouvelle station');
+});
+
+map.on('click', (e)=>{
+  if(!adminMode || !pendingAdd) return;
+  pendingAdd = false;
+  document.getElementById('adminAddBtn').classList.remove('armed');
+  const code = (prompt('Code de la nouvelle station (ex : 35, 16h, cliff 4)') || '').trim();
+  if(!code) return;
+  if(effectiveStations().some(s=> s.station === code)){
+    showToast('Le code ' + code + ' existe deja'); return;
+  }
+  const st = { station: code, lat:+e.latlng.lat.toFixed(6), lon:+e.latlng.lng.toFixed(6),
+               active: true, site: currentSite };
+  if(currentSite === 'cliffs') st.form = 'cliff';
+  stationEdits.added.push(st);
+  saveStationEdits();
+  applySite(currentSite);
+  updateAdminBar();
+  showToast('Station ' + code + ' ajoutee');
+});
+
+/* Remet les stations retirees */
+document.getElementById('adminRestoreBtn').addEventListener('click', ()=>{
+  if(!stationEdits.removed.length) return;
+  if(!confirm('Remettre les ' + stationEdits.removed.length + ' station(s) retiree(s) ?\n\n'
+              + stationEdits.removed.join(', '))) return;
+  stationEdits.removed = [];
+  saveStationEdits();
+  applySite(currentSite);
+  updateAdminBar();
+  showToast('Stations remises');
+});
+
+/* Export du referentiel complet, a publier pour que tout le monde l'ait */
+document.getElementById('adminExportBtn').addEventListener('click', ()=>{
+  const liste = effectiveStations().map(s=>{
+    const o = { station:s.station, lat:s.lat, lon:s.lon, active:s.active !== false };
+    if(s.site) o.site = s.site;
+    if(s.form) o.form = s.form;
+    return o;
+  });
+  const blob = new Blob([JSON.stringify(liste, null, 2)], {type:'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'stations.json';
+  a.click();
+  URL.revokeObjectURL(a.href);
+  showToast(liste.length + ' stations exportees - a publier sur GitHub');
+});
+
+document.getElementById('adminExitBtn').addEventListener('click', exitAdmin);
+
+/* Entree dans le mode admin : ?admin=1 dans l'adresse, ou appui long sur le
+   compteur en haut a droite (pratique sur telephone). */
+if(/[?&]admin=1/.test(location.search)) enterAdmin();
+(function(){
+  const pill = document.querySelector('.stat-pill');
+  let t = null;
+  const start = ()=>{ t = setTimeout(enterAdmin, 800); };
+  const stop  = ()=>{ if(t){ clearTimeout(t); t = null; } };
+  ['mousedown','touchstart'].forEach(ev=> pill.addEventListener(ev, start));
+  ['mouseup','mouseleave','touchend','touchcancel','touchmove'].forEach(ev=> pill.addEventListener(ev, stop));
+})();
+
 /* ---------------- G&#201;OLOCALISATION ---------------- */
 let userMarker = null;
 function updateUserPosition(lat, lon){
@@ -2993,7 +3192,7 @@ function stationFormHasInput(){
       || v('stationNotes') !== '' || stationPhotosBuffer.length > 0;
 }
 
-function stationDef(code){ return ALL_STATIONS.find(s=> s.station === code); }
+function stationDef(code){ return effectiveStations().find(s=> s.station === code); }
 
 /* Adapte la fiche au type de station. Les stations de falaise n'ont que les
    deux comptages (adultes, nids), plus note et photo : le champ "how many are
