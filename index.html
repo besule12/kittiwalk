@@ -406,20 +406,10 @@
     height:48px; border-radius:999px; padding:0 18px;
     font-family:'Baloo 2',cursive; font-weight:600; font-size:15px; gap:8px;
   }
-  #exportBtn{
-    bottom:84px; left:16px;
-    height:38px; border-radius:999px; padding:0 14px;
-    font-size:12.5px; font-weight:500;
-  }
-  #exportCsvBtn{
-    bottom:130px; left:16px;
-    height:38px; border-radius:999px; padding:0 14px;
-    font-size:12.5px; font-weight:500;
-  }
   /* Entree du mode administrateur : visible, mais protegee par un code.
      Le geste cache d'avant etait introuvable sur telephone. */
   #adminKeyBtn{
-    bottom:176px; left:16px;
+    bottom:84px; left:16px;
     height:34px; border-radius:999px; padding:0 12px;
     font-size:12px; font-weight:500; opacity:.75;
   }
@@ -609,6 +599,8 @@
   <button type="button" id="adminAddBtn">+ Station</button>
   <button type="button" id="adminRestoreBtn">Restaurer</button>
   <button type="button" id="adminExportBtn">&#11015; stations.json</button>
+  <button type="button" id="exportCsvBtn">&#128202; CSV</button>
+  <button type="button" id="exportBtn">&#11015; JSON</button>
   <button type="button" id="adminExitBtn">Quitter</button>
 </div>
 
@@ -616,8 +608,6 @@
 
 <button class="fab" id="locateBtn" title="Me localiser">&#128205;</button>
 <button class="fab" id="anomalyBtn">&#128247; Report</button>
-<button class="fab" id="exportBtn">&#11015; Export JSON</button>
-<button class="fab" id="exportCsvBtn">&#128202; Export CSV</button>
 <button class="fab" id="adminKeyBtn">&#128273; Admin</button>
 
 <button id="legendBtn" title="L&#233;gende">&#127912;</button>
