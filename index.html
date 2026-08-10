@@ -2143,6 +2143,7 @@ function openLeveledHotel(found, levelId, unitId){
     ledgeDraft[l.key] = prev ? { status: prev.status, comment: prev.comment || '' }
                              : { status: null, comment: '' };
   });
+  snapshotHotelForm();
   document.getElementById('hotelName').textContent = levelHotel.name;
   document.getElementById('ledgeSearch').value = '';
   buildPalette();
@@ -2158,6 +2159,10 @@ function openHotelSheet(id){
   if(found.levels){ showLevelStep(found); return; }
   levelHotel = null;
   setHotelStage('grid');
+  // Un hotel sans etages n'a rien ou "revenir" : sans ce nettoyage, le fil
+  // d'Ariane de l'hotel 5 restait affiche sur la fiche des autres hotels.
+  const crumbEl = document.getElementById('crumb');
+  if(crumbEl){ crumbEl.innerHTML = ''; crumbEl.style.display = 'none'; }
 
   if(found.group && found.panels){
     // groupe d'hotels (ex: 11 & 12) : panneaux de plusieurs batiments
@@ -2201,6 +2206,7 @@ function openHotelSheet(id){
     ledgeDraft[k] = prev ? { status: prev.status, comment: prev.comment || '' }
                          : { status: null, comment: '' };
   });
+  snapshotHotelForm();
   document.getElementById('ledgeSearch').value = '';
   buildPalette();
   setView(true);
@@ -3238,13 +3244,28 @@ function locateMe(recenter){
   navigator.geolocation.getCurrentPosition(pos=>{
     updateUserPosition(pos.coords.latitude, pos.coords.longitude);
     if(recenter) map.setView([pos.coords.latitude, pos.coords.longitude], 17);
-  }, err=> showToast("Localisation impossible : " + err.message), {enableHighAccuracy:true});
+  }, err=> showToast(geolocMessage(err)),
+  // timeout indispensable : sans lui la demande peut tourner indefiniment sans
+  // jamais repondre ni echouer, et rien n'indique a l'observateur quoi faire.
+  {enableHighAccuracy:true, timeout:15000, maximumAge:30000});
 }
 if(navigator.geolocation){
   navigator.geolocation.watchPosition(
     pos=> updateUserPosition(pos.coords.latitude, pos.coords.longitude),
-    ()=>{}, {enableHighAccuracy:true});
+    ()=>{}, {enableHighAccuracy:true, timeout:20000, maximumAge:30000});
 }
+/* Messages de geolocalisation en clair. L'ancien affichait le texte brut du
+   navigateur, en anglais, sans dire que la station peut toujours etre choisie
+   a la main -- ce qui est le point important sur le terrain. */
+function geolocMessage(err){
+  switch(err && err.code){
+    case 1: return 'Localisation refusee. Choisis ta station dans la liste.';
+    case 2: return 'Position introuvable ici. Choisis ta station dans la liste.';
+    case 3: return 'La localisation est trop lente. Choisis ta station dans la liste.';
+    default: return 'Localisation impossible. Choisis ta station dans la liste.';
+  }
+}
+
 document.getElementById('locateBtn').addEventListener('click', ()=> locateMe(true));
 
 /* ---------------- SHEETS ---------------- */
@@ -3263,8 +3284,23 @@ function closeSheets(){
   const ce = document.getElementById('cellEditor');
   if(ce) ce.classList.remove('open');
 }
-backdrop.addEventListener('click', closeSheets);
-document.getElementById('closeStation').addEventListener('click', closeSheets);
+/* Fermer en touchant le fond fait perdre la saisie en cours. Sur un telephone
+   tenu d'une main, dehors, un appui a cote de la fiche arrive constamment : on
+   confirme donc, mais SEULEMENT si quelque chose n'est pas enregistre. */
+function closeSheetsGuarded(){
+  const hotelSheet = document.getElementById('hotelSheet');
+  let perte = '';
+  if(stationSheet.classList.contains('open') && stationFormDirty()){
+    perte = 'Le comptage en cours sera perdu.';
+  } else if(hotelSheet && hotelSheet.classList.contains('open') && hotelFormDirty()){
+    perte = 'Les ledges saisies et non enregistrees seront perdues.';
+  }
+  if(perte && !confirm('Fermer la fiche ?\n\n' + perte)) return;
+  closeSheets();
+}
+
+backdrop.addEventListener('click', closeSheetsGuarded);
+document.getElementById('closeStation').addEventListener('click', closeSheetsGuarded);
 document.getElementById('closeAnomaly').addEventListener('click', closeSheets);
 
 /* Remplit les champs avec la derniere observation connue de la station. */
@@ -3279,12 +3315,36 @@ function fillStationForm(code){
   renderPhotoRow('stationPhotoRow', stationPhotosBuffer, 'stationPhotoFile');
 }
 
-/* Y a-t-il quelque chose de saisi dans la fiche ? */
+/* Y a-t-il quelque chose de saisi dans la fiche ? (sert au refus de la fiche
+   entierement vide a l'enregistrement) */
 function stationFormHasInput(){
   const v = id=> document.getElementById(id).value.trim();
   return v('adultsInput') !== '' || v('aonInput') !== ''
       || v('stationNotes') !== '' || stationPhotosBuffer.length > 0;
 }
+
+/* --- Detection d'une saisie NON ENREGISTREE ---
+   La fiche s'ouvre preremplie avec la derniere observation connue. Se contenter
+   de "y a-t-il quelque chose dans les champs" ferait apparaitre la confirmation
+   a chaque fois, pour rien, et on prend l'habitude de la balayer sans lire.
+   On compare donc l'etat courant a celui de l'ouverture. */
+let stationFormSnapshot = '';
+function stationFormState(){
+  const v = id=> document.getElementById(id).value;
+  return [v('observersInput'), v('adultsInput'), v('aonInput'), v('stationNotes'),
+          stationPhotosBuffer.length].join('');
+}
+function snapshotStationForm(){ stationFormSnapshot = stationFormState(); }
+function stationFormDirty(){ return stationFormState() !== stationFormSnapshot; }
+
+let hotelFormSnapshot = '';
+function hotelFormState(){
+  return Object.keys(ledgeDraft || {}).sort().map(k=>
+    k + ':' + ((ledgeDraft[k] && ledgeDraft[k].status) || '')
+      + ':' + ((ledgeDraft[k] && ledgeDraft[k].comment) || '')).join('');
+}
+function snapshotHotelForm(){ hotelFormSnapshot = hotelFormState(); }
+function hotelFormDirty(){ return hotelFormState() !== hotelFormSnapshot; }
 
 function stationDef(code){ return effectiveStations().find(s=> s.station === code); }
 
@@ -3304,6 +3364,7 @@ function openStationSheet(code){
   stationFormCode = code;
   applyStationFormVariant(code);
   fillStationForm(code);
+  snapshotStationForm();
   updateSubmitState();
   openSheet(stationSheet);
 }
@@ -3332,7 +3393,10 @@ function updateSubmitState(){
 stationSelect.addEventListener('change', ()=>{
   const code = stationSelect.value;
   if(code === stationFormCode){ updateSubmitState(); return; }
-  if(stationFormHasInput() && stationFormCode &&
+  // stationFormDirty et non stationFormHasInput : la fiche est preremplie avec
+  // la derniere observation, donc "il y a des chiffres" est presque toujours
+  // vrai et la confirmation apparaitrait sans raison.
+  if(stationFormDirty() && stationFormCode &&
      !confirm('Passer a la station ' + code + ' ?\n\nLes chiffres saisis pour la station '
               + stationFormCode + ' et non enregistres seront perdus.')){
     stationSelect.value = stationFormCode;   // on annule le changement
@@ -3342,6 +3406,7 @@ stationSelect.addEventListener('change', ()=>{
   stationFormCode = code;
   applyStationFormVariant(code);
   fillStationForm(code);
+  snapshotStationForm();
   updateSubmitState();
 });
 
