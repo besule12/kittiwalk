@@ -54,6 +54,18 @@
     border:1px solid var(--line);
   }
   .stat-pill b{color:var(--ok);}
+  /* bascule entre les deux sites de comptage (centre-ville / falaises) */
+  .site-switch{
+    display:flex; background:var(--white);
+    border:1px solid var(--line); border-radius:999px; overflow:hidden;
+  }
+  .site-btn{
+    font-family:'Baloo 2',cursive; font-weight:700; font-size:17px;
+    letter-spacing:.3px; padding:5px 15px;
+    border:0; background:transparent; color:var(--ink);
+    cursor:pointer; -webkit-tap-highlight-color:transparent;
+  }
+  .site-btn.is-on{ background:var(--ink); color:var(--white); }
 
   /* ---------- MAP ---------- */
   #map{flex:1; width:100%; height:100%;}
@@ -549,8 +561,11 @@
 <body>
 
 <header>
-  <div class="title">City Map</div>
-  <div class="stat-pill"><b id="doneCount">0</b>/<span id="totalCount">43</span> stations</div>
+  <div class="site-switch">
+    <button type="button" class="site-btn is-on" data-site="city">City</button>
+    <button type="button" class="site-btn" data-site="cliffs">Cliffs</button>
+  </div>
+  <div class="stat-pill"><b id="doneCount">0</b>/<span id="totalCount">0</span> stations</div>
 </header>
 
 <div id="map"></div>
@@ -573,7 +588,7 @@
 <div class="sheet" id="stationSheet">
   <div class="sheet-handle"></div>
   <div class="sheet-top">
-    <h1>City Form</h1>
+    <h1 id="stationFormTitle">City Form</h1>
     <button class="close-x" id="closeStation">&#10005;</button>
   </div>
 
@@ -709,8 +724,16 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
 <script>
 /* ---------------- STATIONS (fusion QGIS 2024/2025, WGS84) ---------------- */
-let STATIONS = [];      // stations actives, affich&#233;es sur la carte
-let ALL_STATIONS = [];  // toutes, y compris les inactives (archives)
+let STATIONS = [];      // stations actives DU SITE COURANT, affich&#233;es sur la carte
+let ALL_STATIONS = [];  // toutes, tous sites, y compris les inactives (archives)
+
+/* Deux sites de comptage : "city" (48 stations dans 1,2 km de centre-ville) et
+   "cliffs" (colonie de falaise, 3 stations a ~6 km au nord-est). Impossible de
+   montrer les deux ensemble : au zoom necessaire pour les faire tenir, les
+   marqueurs du centre-ville se chevauchent et deviennent inutilisables. On
+   bascule donc d'un site a l'autre, et chacun garde son propre compteur. */
+let currentSite = 'city';
+function siteOf(st){ return st.site || 'city'; }
 // charg&#233;es depuis stations.json (modifiable sur GitHub sans toucher au code)
 
 /* ---------------- PERSISTANCE (stockage local du t&#233;l&#233;phone) ---------------- */
@@ -776,6 +799,13 @@ let stationMarkers = {};
 let stationPhotosBuffer = [];
 let anomalyPhotosBuffer = [];
 
+/* Station reellement affichee dans la fiche. La sauvegarde s'appuie sur cette
+   valeur, et non sur le menu deroulant lu au moment du clic : sinon changer de
+   station dans le menu envoyait les chiffres sur la mauvaise.
+   Declaree ici, avec l'etat : applySite() y touche des l'initialisation, bien
+   avant la section du formulaire. */
+let stationFormCode = null;
+
 /* ---------------- CARTE ---------------- */
 const map = L.map('map', { zoomControl:false }).setView([69.6489, 18.9551], 15); // centre-ville Troms&#248; par d&#233;faut
 /* Fond de carte : Kartverket, l'autorite cartographique norvegienne (donnees
@@ -800,10 +830,18 @@ L.tileLayer('https://cache.kartverket.no/v1/wmts/1.0.0/topo/default/webmercator/
 }).addTo(map);
 L.control.zoom({position:'bottomright'}).addTo(map);
 
+/* Le marqueur fait 32 px : un code long comme "cliff 1" n'y tient pas. On y
+   affiche donc une abreviation ("C1"), le code complet restant celui utilise
+   partout ailleurs (menu deroulant, fiche, donnees). */
+function markerLabel(code){
+  if(code.length <= 3) return code;
+  const digits = code.replace(/[^0-9]/g, '');
+  return code.charAt(0).toUpperCase() + digits;
+}
 function makeStationIcon(code){
   return L.divIcon({
     className:'',
-    html:`<div class="station-marker ${freshnessClass(code)}">${code}</div>`,
+    html:`<div class="station-marker ${freshnessClass(code)}">${markerLabel(code)}</div>`,
     iconSize:[32,32], iconAnchor:[16,16]
   });
 }
@@ -826,18 +864,38 @@ function buildStations(){
     stationMarkers[st.station] = m;
     [stationSelect, anomalySelect].forEach(sel=>{
       const o = document.createElement('option');
-      o.value = st.station; o.textContent = 'Station ' + st.station;
+      o.value = st.station;
+      // "Station 12" pour les codes numeriques, "Cliff 1" tel quel pour les autres
+      o.textContent = /^[0-9]/.test(st.station)
+        ? 'Station ' + st.station
+        : st.station.charAt(0).toUpperCase() + st.station.slice(1);
       sel.appendChild(o);
     });
   });
   document.getElementById('totalCount').textContent = STATIONS.length;
   if(STATIONS.length){
-    map.setView([
-      STATIONS.reduce((s,x)=>s+x.lat,0)/STATIONS.length,
-      STATIONS.reduce((s,x)=>s+x.lon,0)/STATIONS.length
-    ], 15);
+    // fitBounds plutot qu'un zoom fixe : cadre correctement le centre-ville
+    // comme les 3 stations de falaise, sans reglage par site.
+    map.fitBounds(L.latLngBounds(STATIONS.map(s=> [s.lat, s.lon])),
+                  { padding:[50,50], maxZoom:16 });
   }
   refreshAllMarkers();
+}
+
+/* Bascule de site : on reconstruit marqueurs et listes, puis on recadre. */
+function applySite(site){
+  currentSite = site;
+  Object.keys(stationMarkers).forEach(k=> map.removeLayer(stationMarkers[k]));
+  stationMarkers = {};
+  [stationSelect, anomalySelect].forEach(sel=>{
+    while(sel.options.length > 1) sel.remove(1);   // on garde le libelle d'invite
+    sel.value = ''; sel.classList.remove('filled');
+  });
+  stationFormCode = null;
+  STATIONS = ALL_STATIONS.filter(s=> s.active !== false && siteOf(s) === site);
+  document.querySelectorAll('.site-btn').forEach(b=>
+    b.classList.toggle('is-on', b.dataset.site === site));
+  buildStations();
 }
 
 /* ---------------- HOTELS ---------------- */
@@ -2823,12 +2881,52 @@ ALL_STATIONS = [
     "lat": 69.642309,
     "lon": 18.942534,
     "active": true
+  },
+
+  /* --- Site "cliffs" : colonie de falaise, a ~6 km au nord-est du centre.
+     Coordonnees converties depuis les releves DMS :
+       cliff 1  69 42 09.0 N / 19 00 55.2 E
+       cliff 2  69 42 07.0 N / 19 00 47.4 E
+       cliff 3  69 41 54.2 N / 19 00 49.1 E
+     form:"cliff" = formulaire reduit (adultes + nids + note + photo),
+     sans le champ "how many are you today". --- */
+  {
+    "station": "cliff 1",
+    "lat": 69.702500,
+    "lon": 19.015333,
+    "active": true,
+    "site": "cliffs",
+    "form": "cliff"
+  },
+  {
+    "station": "cliff 2",
+    "lat": 69.701944,
+    "lon": 19.013167,
+    "active": true,
+    "site": "cliffs",
+    "form": "cliff"
+  },
+  {
+    "station": "cliff 3",
+    "lat": 69.698389,
+    "lon": 19.013639,
+    "active": true,
+    "site": "cliffs",
+    "form": "cliff"
   }
 ];
-STATIONS = ALL_STATIONS.filter(s=> s.active !== false);
-buildStations();
+applySite(currentSite);
 [stationSelect, anomalySelect].forEach(sel=>{
   sel.addEventListener('change', ()=> sel.classList.add('filled'));
+});
+
+/* Bascule centre-ville / falaises */
+document.querySelectorAll('.site-btn').forEach(b=>{
+  b.addEventListener('click', ()=>{
+    if(b.dataset.site === currentSite) return;
+    closeSheets();
+    applySite(b.dataset.site);
+  });
 });
 
 /* ---------------- G&#201;OLOCALISATION ---------------- */
@@ -2876,11 +2974,6 @@ backdrop.addEventListener('click', closeSheets);
 document.getElementById('closeStation').addEventListener('click', closeSheets);
 document.getElementById('closeAnomaly').addEventListener('click', closeSheets);
 
-/* Station reellement affichee dans la fiche. La sauvegarde s'appuie sur
-   cette valeur, et non sur le menu deroulant lu au moment du clic : sinon
-   changer de station dans le menu envoyait les chiffres sur la mauvaise. */
-let stationFormCode = null;
-
 /* Remplit les champs avec la derniere observation connue de la station. */
 function fillStationForm(code){
   const ex = latestObs(code);
@@ -2900,10 +2993,23 @@ function stationFormHasInput(){
       || v('stationNotes') !== '' || stationPhotosBuffer.length > 0;
 }
 
+function stationDef(code){ return ALL_STATIONS.find(s=> s.station === code); }
+
+/* Adapte la fiche au type de station. Les stations de falaise n'ont que les
+   deux comptages (adultes, nids), plus note et photo : le champ "how many are
+   you today" ne s'applique pas a un point de falaise observe a la longue-vue. */
+function applyStationFormVariant(code){
+  const def = stationDef(code);
+  const isCliff = !!(def && def.form === 'cliff');
+  document.getElementById('observersInput').style.display = isCliff ? 'none' : '';
+  document.getElementById('stationFormTitle').textContent = isCliff ? 'Cliff Form' : 'City Form';
+}
+
 function openStationSheet(code){
   stationSelect.value = code;
   stationSelect.classList.add('filled');
   stationFormCode = code;
+  applyStationFormVariant(code);
   fillStationForm(code);
   updateSubmitState();
   openSheet(stationSheet);
@@ -2941,6 +3047,7 @@ stationSelect.addEventListener('change', ()=>{
     return;
   }
   stationFormCode = code;
+  applyStationFormVariant(code);
   fillStationForm(code);
   updateSubmitState();
 });
