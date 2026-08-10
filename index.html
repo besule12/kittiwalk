@@ -725,16 +725,24 @@ function saveStore(key, data){
   catch(e){ /* quota plein : on continue en m&#233;moire */ }
 }
 
+/* Identifiant unique d'observation. Indispensable pour une synchronisation
+   future : sans lui, un serveur ne peut pas distinguer une nouvelle
+   observation d'un doublon renvoye apres une coupure reseau. */
+function newObsId(){
+  try{ if(window.crypto && crypto.randomUUID) return crypto.randomUUID(); }catch(e){}
+  return 'obs-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2,10);
+}
+
 /* Ancien format : une seule observation par station, ecrasee a chaque
    enregistrement. Nouveau format : une liste, pour garder l'historique
    des tournees. Les donnees deja presentes sur le telephone sont
-   converties au chargement, sans rien perdre. */
+   converties au chargement, sans rien perdre, et recoivent un identifiant. */
 function migrateObservations(raw){
   const out = {};
   Object.keys(raw || {}).forEach(code=>{
     const v = raw[code];
-    if(Array.isArray(v)) out[code] = v;
-    else if(v) out[code] = [v];
+    const list = Array.isArray(v) ? v : (v ? [v] : []);
+    if(list.length) out[code] = list.map(o=> o && o.id ? o : Object.assign({ id: newObsId() }, o));
   });
   return out;
 }
@@ -2941,6 +2949,8 @@ document.getElementById('saveStation').addEventListener('click', ()=>{
   }
   if(!observations[code]) observations[code] = [];
   observations[code].push({
+    id: newObsId(),
+    station: code,
     observers: parseInt(document.getElementById('observersInput').value||'1') || 1,
     adults: parseInt(document.getElementById('adultsInput').value||'0') || 0,
     aon: parseInt(document.getElementById('aonInput').value||'0') || 0,
