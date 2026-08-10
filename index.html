@@ -2541,7 +2541,11 @@ function renderLedges(filter){
     const d = ledgeDraft[k];
     const card = document.createElement('div');
     card.className = 'ledge-card' + (d.status ? ' filled' : '');
-    let radios = '';
+    // Premiere option : revenir a "non renseigne". Sans elle, un bouton radio
+    // ne se deselectionne jamais : une fois un statut pose par erreur dans la
+    // vue liste, il etait impossible de l'effacer.
+    let radios = '<label class="radio-row"><input type="radio" name="st_' + k + '" value="-1"'
+               + (d.status ? '' : ' checked') + '> <em>Not recorded</em></label>';
     STATUS_OPTIONS.forEach((opt, i)=>{
       const checked = d.status === opt ? ' checked' : '';
       radios += '<label class="radio-row"><input type="radio" name="st_' + k + '" value="' + i + '"' + checked + '> ' + opt + '</label>';
@@ -2558,8 +2562,9 @@ function renderLedges(filter){
 
     card.querySelectorAll('input[type=radio]').forEach(r=>{
       r.addEventListener('change', ()=>{
-        ledgeDraft[k].status = STATUS_OPTIONS[parseInt(r.value)];
-        card.classList.add('filled');
+        const i = parseInt(r.value);
+        ledgeDraft[k].status = (i < 0) ? null : STATUS_OPTIONS[i];
+        card.classList.toggle('filled', !!ledgeDraft[k].status);
         updateMissing();
       });
     });
@@ -2625,6 +2630,14 @@ document.getElementById('saveHotel').addEventListener('click', ()=>{
   if(levelHotel && currentHotel.storeId === 'H5'){
     saveLevelDraft();
     const round = openHotelRound('H5');       // cloture la tournee en cours
+    // Sans ce garde-fou, valider sans avoir rien rempli marquait l'hotel comme
+    // fait (marqueur vert) avec zero ledge relevee. Le bouton "tout marquer
+    // Empty" reste le moyen normal de remplir vite : apres lui, les 90 ledges
+    // ont un statut et l'enregistrement passe.
+    if(Object.keys(round.ledges).length === 0){
+      showToast('Aucune ledge remplie - rien a enregistrer');
+      return;
+    }
     round.savedAt = new Date().toISOString();
     saveStore(HOTEL_KEY, hotelObs);
     refreshHotelMarkers();
