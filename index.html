@@ -725,6 +725,26 @@ function saveStore(key, data){
   catch(e){ /* quota plein : on continue en m&#233;moire */ }
 }
 
+/* Ancien format : une seule observation par station, ecrasee a chaque
+   enregistrement. Nouveau format : une liste, pour garder l'historique
+   des tournees. Les donnees deja presentes sur le telephone sont
+   converties au chargement, sans rien perdre. */
+function migrateObservations(raw){
+  const out = {};
+  Object.keys(raw || {}).forEach(code=>{
+    const v = raw[code];
+    if(Array.isArray(v)) out[code] = v;
+    else if(v) out[code] = [v];
+  });
+  return out;
+}
+
+/* Derniere observation d'une station (la plus recente), ou undefined. */
+function latestObs(code){
+  const list = observations[code];
+  return (list && list.length) ? list[list.length - 1] : undefined;
+}
+
 /* ---------------- FRA&#206;CHEUR ---------------- */
 function daysSince(iso){
   if(!iso) return Infinity;
@@ -733,7 +753,8 @@ function daysSince(iso){
   return Math.round((now - then) / 86400000);
 }
 function freshnessClass(code){
-  const d = daysSince(observations[code] && observations[code].timestamp);
+  const last = latestObs(code);
+  const d = daysSince(last && last.timestamp);
   if(d <= 2) return 'fresh';
   if(d === 3) return 'stale';
   if(d <= 6) return 'late';
@@ -741,7 +762,7 @@ function freshnessClass(code){
 }
 
 /* ---------------- &#201;TAT ---------------- */
-let observations = loadStore(STORE_KEY, {});
+let observations = migrateObservations(loadStore(STORE_KEY, {}));
 let anomalies = loadStore(ANOM_KEY, []);
 let stationMarkers = {};
 let stationPhotosBuffer = [];
@@ -765,7 +786,10 @@ function makeStationIcon(code){
 function refreshAllMarkers(){
   STATIONS.forEach(st=> stationMarkers[st.station] &&
     stationMarkers[st.station].setIcon(makeStationIcon(st.station)));
-  const fresh = STATIONS.filter(st=> daysSince(observations[st.station] && observations[st.station].timestamp) <= 2).length;
+  const fresh = STATIONS.filter(st=>{
+    const last = latestObs(st.station);
+    return daysSince(last && last.timestamp) <= 2;
+  }).length;
   document.getElementById('doneCount').textContent = fresh;
 }
 const stationSelect = document.getElementById('stationSelect');
@@ -2766,10 +2790,14 @@ backdrop.addEventListener('click', closeSheets);
 document.getElementById('closeStation').addEventListener('click', closeSheets);
 document.getElementById('closeAnomaly').addEventListener('click', closeSheets);
 
-function openStationSheet(code){
-  stationSelect.value = code;
-  stationSelect.classList.add('filled');
-  const ex = observations[code];
+/* Station reellement affichee dans la fiche. La sauvegarde s'appuie sur
+   cette valeur, et non sur le menu deroulant lu au moment du clic : sinon
+   changer de station dans le menu envoyait les chiffres sur la mauvaise. */
+let stationFormCode = null;
+
+/* Remplit les champs avec la derniere observation connue de la station. */
+function fillStationForm(code){
+  const ex = latestObs(code);
   document.getElementById('observersInput').value = ex ? ex.observers : '';
   document.getElementById('adultsInput').value = ex ? ex.adults : '';
   document.getElementById('aonInput').value = ex ? ex.aon : '';
@@ -2777,6 +2805,20 @@ function openStationSheet(code){
   updateCharCount();
   stationPhotosBuffer = ex ? [...(ex.photos || [])] : [];
   renderPhotoRow('stationPhotoRow', stationPhotosBuffer, 'stationPhotoFile');
+}
+
+/* Y a-t-il quelque chose de saisi dans la fiche ? */
+function stationFormHasInput(){
+  const v = id=> document.getElementById(id).value.trim();
+  return v('adultsInput') !== '' || v('aonInput') !== ''
+      || v('stationNotes') !== '' || stationPhotosBuffer.length > 0;
+}
+
+function openStationSheet(code){
+  stationSelect.value = code;
+  stationSelect.classList.add('filled');
+  stationFormCode = code;
+  fillStationForm(code);
   updateSubmitState();
   openSheet(stationSheet);
 }
@@ -2799,7 +2841,23 @@ function updateSubmitState(){
   const ready = stationSelect.value !== '';
   document.getElementById('saveStation').classList.toggle('ready', ready);
 }
-stationSelect.addEventListener('change', updateSubmitState);
+/* Changer de station recharge les champs de cette station. Sans ca, les
+   chiffres saisis pour la station precedente restaient affiches et
+   partaient dans la nouvelle a l'enregistrement. */
+stationSelect.addEventListener('change', ()=>{
+  const code = stationSelect.value;
+  if(code === stationFormCode){ updateSubmitState(); return; }
+  if(stationFormHasInput() && stationFormCode &&
+     !confirm('Passer a la station ' + code + ' ?\n\nLes chiffres saisis pour la station '
+              + stationFormCode + ' et non enregistres seront perdus.')){
+    stationSelect.value = stationFormCode;   // on annule le changement
+    updateSubmitState();
+    return;
+  }
+  stationFormCode = code;
+  fillStationForm(code);
+  updateSubmitState();
+});
 
 ['observersInput','adultsInput','aonInput'].forEach(id=>{
   const el = document.getElementById(id);
@@ -2873,21 +2931,27 @@ renderPhotoRow('anomalyPhotoRow', anomalyPhotosBuffer, 'anomalyPhotoFile');
 
 /* ---------------- SAUVEGARDE ---------------- */
 document.getElementById('saveStation').addEventListener('click', ()=>{
-  const code = stationSelect.value;
+  const code = stationFormCode || stationSelect.value;
   if(!code){ showToast('Choisis une station'); return; }
-  observations[code] = {
+  // garde-fou : on refuse une fiche entierement vide, qui enregistrerait
+  // de faux zeros ("0 mouette") au lieu de "pas compte".
+  if(!stationFormHasInput()){
+    showToast('Rien a enregistrer : saisis un comptage, une note ou une photo');
+    return;
+  }
+  if(!observations[code]) observations[code] = [];
+  observations[code].push({
     observers: parseInt(document.getElementById('observersInput').value||'1') || 1,
     adults: parseInt(document.getElementById('adultsInput').value||'0') || 0,
     aon: parseInt(document.getElementById('aonInput').value||'0') || 0,
     notes: document.getElementById('stationNotes').value,
     photos: [...stationPhotosBuffer],
     timestamp: new Date().toISOString()
-  };
+  });
   // persistance : tout sauf les photos (trop lourdes pour le stockage local)
   const toStore = {};
   Object.keys(observations).forEach(k=>{
-    const {photos, ...rest} = observations[k];
-    toStore[k] = rest;
+    toStore[k] = observations[k].map(({photos, ...rest})=> rest);
   });
   saveStore(STORE_KEY, toStore);
   refreshAllMarkers();
