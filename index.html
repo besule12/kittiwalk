@@ -57,6 +57,14 @@
     -webkit-touch-callout:none; -webkit-user-select:none; user-select:none;
   }
   .stat-pill b{color:var(--ok);}
+  /* rappel du dernier comptage : jour, heure et minute, en heure locale */
+  #lastObsInfo{
+    margin-top:8px; padding:8px 12px; border-radius:10px;
+    background:var(--card); border:1px solid var(--line);
+    font-size:12.5px; line-height:1.5; color:var(--grey);
+  }
+  #lastObsInfo:empty{ display:none; }
+  #lastObsInfo b{ color:var(--ink); font-weight:600; }
   /* bascule entre les deux sites de comptage (centre-ville / falaises) */
   .site-switch{
     display:flex; background:var(--white);
@@ -652,6 +660,7 @@
     <select class="field-box" id="stationSelect">
       <option value="" disabled selected>What station are you at?</option>
     </select>
+    <div id="lastObsInfo"></div>
   </div>
 
   <div class="card">
@@ -3256,14 +3265,25 @@ function csvCell(v){
   return /[";\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
 }
 
+/* Date et heure LOCALES d'un horodatage.
+   toISOString() renvoie de l'UTC : un comptage fait a 10:13 en Norvege sortait
+   a 08:13, et un comptage a 00:30 sortait la VEILLE a 22:30 -- mauvais jour.
+   Pour un suivi de terrain, le jour et l'heure du comptage sont des donnees. */
+function localParts(iso){
+  const t = new Date(iso);
+  const p = n=> String(n).padStart(2, '0');
+  return [ t.getFullYear() + '-' + p(t.getMonth()+1) + '-' + p(t.getDate()),
+           p(t.getHours()) + ':' + p(t.getMinutes()) + ':' + p(t.getSeconds()) ];
+}
+
 function buildCsv(){
   const SEP = ';';   // Excel en francais attend le point-virgule, pas la virgule
+  // timestamp_iso garde l'instant exact (UTC) a cote des colonnes locales :
+  // lisible par un humain d'un cote, recalculable par un analyste de l'autre.
   const rows = [['record_type','station','site','lat','lon','date','heure',
-                 'observers','adults','aon','chicks','ledge','status','notes','id']];
-  const dateParts = iso=>{
-    const t = new Date(iso);
-    return [t.toISOString().slice(0,10), t.toISOString().slice(11,19)];
-  };
+                 'observers','adults','aon','chicks','ledge','status','notes',
+                 'timestamp_iso','id']];
+  const dateParts = localParts;
 
   // 1. observations de stations
   Object.keys(observations).forEach(code=>{
@@ -3271,7 +3291,8 @@ function buildCsv(){
     observations[code].forEach(o=>{
       const [dt, hr] = dateParts(o.timestamp);
       rows.push(['station', code, siteOf(d), d.lat || '', d.lon || '', dt, hr,
-                 o.observers, o.adults, o.aon, '', '', '', o.notes || '', o.id || '']);
+                 o.observers, o.adults, o.aon, '', '', '', o.notes || '',
+                 o.timestamp || '', o.id || '']);
     });
   });
 
@@ -3284,13 +3305,15 @@ function buildCsv(){
       if(r.ledges) Object.keys(r.ledges).forEach(k=>{
         const L = r.ledges[k];
         rows.push(['hotel_ledge', key, 'city', h.lat || '', h.lon || '', dt, hr,
-                   '', '', '', '', L.label || k, L.status || '', L.comment || '', r.id || '']);
+                   '', '', '', '', L.label || k, L.status || '', L.comment || '',
+                   r.savedAt || '', r.id || '']);
       });
       if(r.sections) Object.keys(r.sections).forEach(k=>{
         const S = r.sections[k];
         // "nests" du formulaire par face = des nids occupes, donc colonne aon
         rows.push(['hotel_side', key, 'city', h.lat || '', h.lon || '', dt, hr,
-                   '', S.adults, S.nests, S.chicks, S.side || k, '', S.comment || '', r.id || '']);
+                   '', S.adults, S.nests, S.chicks, S.side || k, '', S.comment || '',
+                   r.savedAt || '', r.id || '']);
       });
     });
   });
@@ -3300,7 +3323,7 @@ function buildCsv(){
     const d = stationDefAny(a.station) || {};
     const [dt, hr] = dateParts(a.timestamp);
     rows.push(['anomaly', a.station, siteOf(d), d.lat || '', d.lon || '', dt, hr,
-               '', '', '', '', '', '', a.notes || '', '']);
+               '', '', '', '', '', '', a.notes || '', a.timestamp || '', '']);
   });
 
   return rows.map(r=> r.map(csvCell).join(SEP)).join('\r\n');
@@ -3395,8 +3418,31 @@ backdrop.addEventListener('click', closeSheetsGuarded);
 document.getElementById('closeStation').addEventListener('click', closeSheetsGuarded);
 document.getElementById('closeAnomaly').addEventListener('click', closeSheets);
 
+/* Rappelle quand la station a ete comptee pour la derniere fois : jour, heure
+   et minute, en heure LOCALE. Sans ca l'observateur n'avait aucun moyen de
+   savoir si les chiffres preremplis datent de ce matin ou de la semaine
+   derniere -- et il n'y a pas de champ de date a saisir, l'heure est celle de
+   l'enregistrement. */
+function renderLastObsInfo(code){
+  const el = document.getElementById('lastObsInfo');
+  if(!el) return;
+  const list = observations[code] || [];
+  if(!list.length){ el.innerHTML = ''; return; }
+  const ex = list[list.length - 1];
+  const t = new Date(ex.timestamp);
+  const p = n=> String(n).padStart(2, '0');
+  const jour  = p(t.getDate()) + '/' + p(t.getMonth()+1) + '/' + t.getFullYear();
+  const heure = p(t.getHours()) + ':' + p(t.getMinutes());
+  const d = daysSince(ex.timestamp);
+  const quand = d === 0 ? 'today' : (d === 1 ? 'yesterday' : d + ' days ago');
+  el.innerHTML = 'Last count: <b>' + jour + ' at ' + heure + '</b> (' + quand + ')'
+               + '<br>' + ex.adults + ' adult(s), ' + ex.aon + ' nest(s)'
+               + (list.length > 1 ? ' &#8212; <b>' + list.length + ' rounds</b> recorded' : '');
+}
+
 /* Remplit les champs avec la derniere observation connue de la station. */
 function fillStationForm(code){
+  renderLastObsInfo(code);
   const ex = latestObs(code);
   document.getElementById('observersInput').value = ex ? ex.observers : '';
   document.getElementById('adultsInput').value = ex ? ex.adults : '';
