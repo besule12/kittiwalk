@@ -630,8 +630,6 @@
   <button type="button" id="adminAddBtn">+ Station</button>
   <button type="button" id="adminRestoreBtn">Restaurer</button>
   <button type="button" id="adminExportBtn">&#11015; stations.json</button>
-  <button type="button" id="exportCsvBtn">&#128202; CSV</button>
-  <button type="button" id="exportBtn">&#11015; JSON</button>
   <button type="button" id="adminExitBtn">Quitter</button>
 </div>
 
@@ -791,6 +789,22 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
 <script>
+/* Si Leaflet n'a pas pu etre telecharge -- CDN injoignable, ou pas de reseau au
+   demarrage -- tout le script echouait des la creation de la carte et l'ecran
+   restait blanc, sans un mot. On previent, on rassure sur les donnees, et on
+   s'arrete proprement au lieu de laisser une page morte. */
+if(typeof L === 'undefined'){
+  document.body.innerHTML =
+    '<div style="padding:28px;font-family:Roboto,sans-serif;line-height:1.65;max-width:34em">'
+    + '<h2 style="font-family:Roboto,sans-serif">The map could not load</h2>'
+    + '<p>The map library could not be downloaded. This almost always means there was '
+    + 'no network connection when the app started.</p>'
+    + '<p><b>Your saved counts are safe.</b> They are stored on this phone and will be '
+    + 'there when the app loads again.</p>'
+    + '<p>Reconnect, then reload this page.</p></div>';
+  throw new Error('Leaflet indisponible : arret propre');
+}
+
 /* ---------------- STATIONS (fusion QGIS 2024/2025, WGS84) ---------------- */
 let STATIONS = [];      // stations actives DU SITE COURANT, affich&#233;es sur la carte
 let ALL_STATIONS = [];  // toutes, tous sites, y compris les inactives (archives)
@@ -908,7 +922,10 @@ function freshnessClass(code){
 
 /* ---------------- &#201;TAT ---------------- */
 let observations = migrateObservations(loadStore(STORE_KEY, {}));
-let anomalies = loadStore(ANOM_KEY, []);
+/* Les signalements n'avaient pas d'identifiant : a la synchronisation, un renvoi
+   apres coupure reseau aurait cree des doublons indistinguables. Meme raison que
+   pour les observations. Les signalements deja enregistres en recoivent un. */
+let anomalies = loadStore(ANOM_KEY, []).map(a=> (a && a.id) ? a : Object.assign({ id: newObsId() }, a));
 let stationMarkers = {};
 let stationPhotosBuffer = [];
 let anomalyPhotosBuffer = [];
@@ -938,10 +955,20 @@ const map = L.map('map', { zoomControl:false }).setView([69.6489, 18.9551], 15);
    sont fonces avec texte blanc, ils restent donc lisibles dessus. Pour un fond
    gris clair (plus contraste, tuiles plus legeres), remplacer "topo" par
    "topograatone" -- meme serveur, rien d'autre a changer. */
-L.tileLayer('https://cache.kartverket.no/v1/wmts/1.0.0/topo/default/webmercator/{z}/{y}/{x}.png', {
+const tileLayer = L.tileLayer('https://cache.kartverket.no/v1/wmts/1.0.0/topo/default/webmercator/{z}/{y}/{x}.png', {
   maxZoom: 18,
   attribution: '&copy; <a href="https://www.kartverket.no/">Kartverket</a>'
 }).addTo(map);
+
+/* Le fond de carte peut etre injoignable alors que l'appli, elle, tourne : on
+   le dit une seule fois et on rappelle que la station reste selectionnable a la
+   main. Sans ca, la carte devenait grise sans explication. */
+let tileErrorShown = false;
+tileLayer.on('tileerror', ()=>{
+  if(tileErrorShown) return;
+  tileErrorShown = true;
+  showToast('Map tiles unavailable - you can still pick a station from the list');
+});
 /* Pas de boutons + / - : ils se superposaient au bouton de localisation, en bas
    a droite. Le zoom se fait au pincement sur telephone, a la molette ou au
    double-clic sur ordinateur -- les boutons n'apportaient rien et genaient. */
@@ -1944,6 +1971,7 @@ function openSidesSheet(gid){
         : { hotel: h.name, side: side, adults:'', chicks:'', nests:'', comment:'' };
     });
   });
+  snapshotSidesForm();
   renderSides();
   openSheet(document.getElementById('sidesSheet'));
 }
@@ -3256,88 +3284,7 @@ else if(/[?&]admin=1/.test(location.search)) enterAdmin();
    Le JSON sert de sauvegarde complete. Le CSV sert a travailler : une ligne
    par observation, avec les coordonnees, donc ouvrable directement dans Excel
    ou LibreOffice, et chargeable dans QGIS comme couche de points. */
-function csvCell(v){
-  const s = (v === null || v === undefined) ? '' : String(v);
-  return /[";\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
-}
 
-/* Date et heure LOCALES d'un horodatage.
-   toISOString() renvoie de l'UTC : un comptage fait a 10:13 en Norvege sortait
-   a 08:13, et un comptage a 00:30 sortait la VEILLE a 22:30 -- mauvais jour.
-   Pour un suivi de terrain, le jour et l'heure du comptage sont des donnees. */
-function localParts(iso){
-  const t = new Date(iso);
-  const p = n=> String(n).padStart(2, '0');
-  return [ t.getFullYear() + '-' + p(t.getMonth()+1) + '-' + p(t.getDate()),
-           p(t.getHours()) + ':' + p(t.getMinutes()) + ':' + p(t.getSeconds()) ];
-}
-
-function buildCsv(){
-  const SEP = ';';   // Excel en francais attend le point-virgule, pas la virgule
-  // timestamp_iso garde l'instant exact (UTC) a cote des colonnes locales :
-  // lisible par un humain d'un cote, recalculable par un analyste de l'autre.
-  const rows = [['record_type','station','site','lat','lon','date','heure',
-                 'observers','adults','aon','chicks','ledge','status','notes',
-                 'timestamp_iso','id']];
-  const dateParts = localParts;
-
-  // 1. observations de stations
-  Object.keys(observations).forEach(code=>{
-    const d = stationDefAny(code) || {};
-    observations[code].forEach(o=>{
-      const [dt, hr] = dateParts(o.timestamp);
-      rows.push(['station', code, siteOf(d), d.lat || '', d.lon || '', dt, hr,
-                 o.observers, o.adults, o.aon, '', '', '', o.notes || '',
-                 o.timestamp || '', o.id || '']);
-    });
-  });
-
-  // 2. hotels : une ligne par corniche, ou par face selon le type de formulaire
-  Object.keys(hotelObs).forEach(key=>{
-    const h = HOTELS.find(x=> x.id === key || x.group === key) || {};
-    hotelObs[key].forEach(r=>{
-      if(!r.savedAt) return;                     // tournee non validee : on ignore
-      const [dt, hr] = dateParts(r.savedAt);
-      if(r.ledges) Object.keys(r.ledges).forEach(k=>{
-        const L = r.ledges[k];
-        rows.push(['hotel_ledge', key, 'city', h.lat || '', h.lon || '', dt, hr,
-                   '', '', '', '', L.label || k, L.status || '', L.comment || '',
-                   r.savedAt || '', r.id || '']);
-      });
-      if(r.sections) Object.keys(r.sections).forEach(k=>{
-        const S = r.sections[k];
-        // "nests" du formulaire par face = des nids occupes, donc colonne aon
-        rows.push(['hotel_side', key, 'city', h.lat || '', h.lon || '', dt, hr,
-                   '', S.adults, S.nests, S.chicks, S.side || k, '', S.comment || '',
-                   r.savedAt || '', r.id || '']);
-      });
-    });
-  });
-
-  // 3. signalements d'anomalies
-  anomalies.forEach(a=>{
-    const d = stationDefAny(a.station) || {};
-    const [dt, hr] = dateParts(a.timestamp);
-    rows.push(['anomaly', a.station, siteOf(d), d.lat || '', d.lon || '', dt, hr,
-               '', '', '', '', '', '', a.notes || '', a.timestamp || '', '']);
-  });
-
-  return rows.map(r=> r.map(csvCell).join(SEP)).join('\r\n');
-}
-
-document.getElementById('exportCsvBtn').addEventListener('click', ()=>{
-  const csv = buildCsv();
-  const lignes = csv.split('\r\n').length - 1;
-  if(lignes === 0){ showToast('Rien a exporter pour l instant'); return; }
-  // Le BOM est VOULU ici : sans lui, Excel affiche mal les accents d'un UTF-8.
-  const blob = new Blob(['﻿' + csv], {type:'text/csv;charset=utf-8'});
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = 'kittiwalk_' + new Date().toISOString().slice(0,10) + '.csv';
-  a.click();
-  URL.revokeObjectURL(a.href);
-  showToast(lignes + ' ligne(s) exportee(s) en CSV');
-});
 
 /* ---------------- G&#201;OLOCALISATION ---------------- */
 let userMarker = null;
@@ -3405,6 +3352,11 @@ function closeSheetsGuarded(){
     perte = 'Le comptage en cours sera perdu.';
   } else if(hotelSheet && hotelSheet.classList.contains('open') && hotelFormDirty()){
     perte = 'Les ledges saisies et non enregistrees seront perdues.';
+  } else {
+    const ss = document.getElementById('sidesSheet');
+    if(ss && ss.classList.contains('open') && sidesFormDirty()){
+      perte = 'Les comptages par face saisis et non enregistres seront perdus.';
+    }
   }
   if(perte && !confirm('Fermer la fiche ?\n\n' + perte)) return;
   closeSheets();
@@ -3470,6 +3422,19 @@ function stationFormState(){
 }
 function snapshotStationForm(){ stationFormSnapshot = stationFormState(); }
 function stationFormDirty(){ return stationFormState() !== stationFormSnapshot; }
+
+/* Meme garde pour la fiche par faces (hotels 6 a 9), qui avait sa propre
+   structure de brouillon et n'etait donc pas couverte. */
+let sidesFormSnapshot = '';
+function sidesFormState(){
+  return Object.keys(sidesDraft || {}).sort().map(k=>{
+    const d = sidesDraft[k] || {};
+    return k + ':' + (d.adults || '') + ':' + (d.chicks || '')
+             + ':' + (d.nests || '') + ':' + (d.comment || '');
+  }).join('');
+}
+function snapshotSidesForm(){ sidesFormSnapshot = sidesFormState(); }
+function sidesFormDirty(){ return sidesFormState() !== sidesFormSnapshot; }
 
 let hotelFormSnapshot = '';
 function hotelFormState(){
@@ -3653,23 +3618,14 @@ document.getElementById('saveAnomaly').addEventListener('click', ()=>{
   if(!notes.trim() && anomalyPhotosBuffer.length===0){
     showToast('Ajoute une description ou une photo'); return;
   }
-  anomalies.push({ station:st, notes, photos:[...anomalyPhotosBuffer], timestamp:new Date().toISOString() });
+  anomalies.push({ id:newObsId(), station:st, notes, photos:[...anomalyPhotosBuffer],
+                   timestamp:new Date().toISOString() });
   saveStore(ANOM_KEY, anomalies.map(({photos, ...rest})=>rest));
   closeSheets();
   showToast('Signalement enregistr&#233; &#8212; station ' + st);
 });
 
 /* ---------------- EXPORT JSON ---------------- */
-document.getElementById('exportBtn').addEventListener('click', ()=>{
-  const payload = { exported_at:new Date().toISOString(), observations, anomalies, hotels: hotelObs };
-  const blob = new Blob([JSON.stringify(payload,null,2)], {type:'application/json'});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = 'kittiwalk_' + new Date().toISOString().slice(0,10) + '.json';
-  a.click();
-  URL.revokeObjectURL(url);
-  showToast('Donn&#233;es export&#233;es &#8212; pense &#224; les envoyer !');
-});
 
 /* ---------------- TOAST ---------------- */
 let toastTimeout;
