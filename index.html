@@ -89,6 +89,15 @@
   #photoViewer.on{ display:flex; }
   #photoViewer img{ max-width:100%; max-height:100%; object-fit:contain; }
   /* fiche admin d'une station */
+  /* Consigne de parcours d'un hotel : par quelle face commencer et dans quel
+     sens tourner. C'est ce qu'un benevole a besoin de lire en arrivant. */
+  #hotelStartNote{
+    display:none; margin:0 4px 10px;
+    padding:8px 12px; border-radius:10px;
+    background:#FFF6DB; border:1px solid #F0DFA8;
+    font-size:12.5px; line-height:1.5; color:#5A4A16;
+  }
+  #hotelStartNote.on{ display:block; }
   #adminSheetInfo{ font-size:13px; line-height:1.7; color:var(--grey); }
   #adminSheetInfo b{ color:var(--ink); font-weight:600; }
   #adminPhotoPreview{ display:none; margin:0 0 10px; padding:0; }
@@ -776,6 +785,7 @@
   </div>
   <div style="padding:0 2px;">
     <div style="font-size:14px;color:var(--grey);margin:2px 0 8px 4px;" id="hotelName">--</div>
+    <div id="hotelStartNote"></div>
     <input class="search-box" id="ledgeSearch" placeholder="Search ledges">
   </div>
   <div id="stepPicker" style="display:none;"></div>
@@ -2237,6 +2247,7 @@ function setHotelStage(stage){          // 'levels' | 'units' | 'grid'
 function showLevelStep(found){
   levelHotel = found;
   document.getElementById('hotelName').textContent = found.name;
+  renderHotelStartNote(found);
   const host = document.getElementById('stepPicker');
   host.innerHTML = '<div class="step-title">Quel etage ?</div>';
   found.levels.forEach(lv=>{
@@ -2347,6 +2358,7 @@ function openLeveledHotel(found, levelId, unitId){
   });
   snapshotHotelForm();
   document.getElementById('hotelName').textContent = levelHotel.name;
+  renderHotelStartNote(levelHotel);
   document.getElementById('ledgeSearch').value = '';
   buildPalette();
   setHotelStage('grid');
@@ -2394,6 +2406,7 @@ function openHotelSheet(id){
     showToast(currentHotel.name + ' : ledges pas encore configurees');
     return;
   }
+  renderHotelStartNote(found);
   document.getElementById('hotelName').textContent =
     currentHotel.name + ' \u2014 ' + currentHotel.ledges.length + ' ledges' +
     (currentHotel.panels ? ' \u2014 ' + currentHotel.panels.length + ' panels' : '');
@@ -2479,6 +2492,18 @@ function ledgeGroups(){
 }
 
 /* Rangees d'un panneau : motif 2-1-2-1... de bas en haut (comme sur la facade) */
+/* Consigne de parcours d'un hotel : par quelle face commencer, dans quel sens
+   tourner. Elle etait enregistree dans les donnees (startNote) mais affichee
+   nulle part, alors que c'est exactement ce qu'un benevole a besoin de lire en
+   arrivant devant la structure. */
+function renderHotelStartNote(hotel){
+  const el = document.getElementById('hotelStartNote');
+  if(!el) return;
+  const note = hotel && hotel.startNote;
+  el.textContent = note ? ('→ ' + note) : '';
+  el.classList.toggle('on', !!note);
+}
+
 /* Corniches d'un panneau, sous forme de libelles.
 
    Historiquement un panneau se decrivait par une plage d'entiers (from -> to).
@@ -3431,6 +3456,9 @@ document.getElementById('adminPhotoFile').addEventListener('change', (e)=>{
       '<b>' + code + '.jpg</b> — ' + px + ', ' + ko + ' KB — downloaded. Send it so it can be '
       + 'published; until then the photo only exists on this phone.';
     showToast(code + '.jpg ready (' + ko + ' KB)');
+    // On vide le champ : sinon rechoisir LE MEME fichier ne declenche aucun
+    // evenement change, et le second essai reste sans effet visible.
+    e.target.value = '';
   });
 });
 
@@ -3603,6 +3631,7 @@ function closeSheets(){
   if(ce) ce.classList.remove('open');
   const as = document.getElementById('adminSheet');
   if(as) as.classList.remove('open');
+  adminStationCode = null;   // evite d'agir sur une station qui n'est plus affichee
 }
 /* Fermer en touchant le fond fait perdre la saisie en cours. Sur un telephone
    tenu d'une main, dehors, un appui a cote de la fiche arrive constamment : on
