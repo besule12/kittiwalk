@@ -694,7 +694,11 @@
     </select>
     <div id="lastObsInfo"></div>
     <figure id="stationRefPhoto">
-      <img id="stationRefImg" alt="" loading="lazy">
+      <!-- PAS de loading="lazy" : le parent est en display:none jusqu'a ce que
+           l'image soit chargee, et une image lazy dans un parent cache ne se
+           charge JAMAIS. Le differe est deja assure autrement : le src n'est
+           pose qu'a l'ouverture de la fiche. -->
+      <img id="stationRefImg" alt="">
       <figcaption id="stationRefCaption"></figcaption>
     </figure>
   </div>
@@ -3537,11 +3541,14 @@ function renderStationPhoto(code){
   if(!fig) return;
   const lieu = STATION_PLACES[code];
   fig.classList.remove('on');
-  img.onload  = ()=> fig.classList.add('on');
+  const montre = ()=> fig.classList.add('on');
+  img.onload  = montre;
   img.onerror = ()=> fig.classList.remove('on');   // pas de photo : rien ne s'affiche
   img.alt = lieu ? (code + ' - ' + lieu) : code;
   cap.textContent = lieu || '';
   img.src = 'photos/' + encodeURIComponent(code) + '.jpg';
+  // image deja en cache : onload ne se declenche pas, on verifie donc aussi ici
+  if(img.complete && img.naturalWidth > 0) montre();
 }
 
 /* Remplit les champs avec la derniere observation connue de la station. */
