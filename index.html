@@ -3650,6 +3650,7 @@ function closeSheetsGuarded(){
     }
   }
   if(perte && !confirm('Fermer la fiche ?\n\n' + perte)) return;
+  clearDraft();          // fermeture voulue : on n'a pas a la restituer au reveil
   closeSheets();
 }
 
@@ -3735,6 +3736,55 @@ function stationFormState(){
 function snapshotStationForm(){ stationFormSnapshot = stationFormState(); }
 function stationFormDirty(){ return stationFormState() !== stationFormSnapshot; }
 
+/* ---------------- SAISIE EN COURS, CONSERVEE ----------------
+   Pendant une tournee on eteint et rallume l'ecran sans arret. Le systeme peut
+   alors decharger l'onglet pour recuperer de la memoire -- iOS le fait
+   volontiers -- et la page se recharge : on perdait la station ouverte et les
+   chiffres deja tapes, et on se retrouvait devant la carte les mains vides.
+
+   On conserve donc en continu la station affichee et les valeurs saisies, et on
+   les restitue au reveil. Les PHOTOS ne sont pas conservees : en base64 elles
+   saturent le stockage. */
+const DRAFT_KEY = 'kittiwalk_draft_v1';
+
+function saveDraft(){
+  if(!stationFormCode || !stationSheet.classList.contains('open')) return;
+  const v = id=> document.getElementById(id).value;
+  rawSet(DRAFT_KEY, JSON.stringify({
+    site: currentSite, station: stationFormCode,
+    observers: v('observersInput'), adults: v('adultsInput'),
+    aon: v('aonInput'), notes: v('stationNotes'),
+    at: Date.now()
+  }));
+}
+
+function clearDraft(){ rawRemove(DRAFT_KEY); }
+
+function restoreDraft(){
+  const raw = rawGet(DRAFT_KEY);
+  if(!raw) return;
+  let d;
+  try { d = JSON.parse(raw); } catch(e){ clearDraft(); return; }
+  if(!d || !d.station){ clearDraft(); return; }
+  // au-dela de 12 h ce n'est plus une tournee en cours, c'est un oubli
+  if(Date.now() - (d.at || 0) > 12 * 3600 * 1000){ clearDraft(); return; }
+  if(d.site && d.site !== currentSite) applySite(d.site);
+  // On verifie contre STATIONS, la liste reellement affichee : effectiveStations
+  // inclut les stations ARCHIVEES (active:false), et on aurait rouvert une fiche
+  // pour une station absente de la carte et du menu.
+  if(!STATIONS.some(s=> s.station === d.station)){ clearDraft(); return; }
+
+  openStationSheet(d.station);
+  // on repose les valeurs saisies APRES le preremplissage, sinon il les ecrase
+  if(d.observers !== undefined) document.getElementById('observersInput').value = d.observers;
+  if(d.adults    !== undefined) document.getElementById('adultsInput').value    = d.adults;
+  if(d.aon       !== undefined) document.getElementById('aonInput').value       = d.aon;
+  if(d.notes     !== undefined) document.getElementById('stationNotes').value   = d.notes;
+  updateCharCount();
+  updateSubmitState();
+  showToast('Count in progress restored');
+}
+
 /* Meme garde pour la fiche par faces (hotels 6 a 9), qui avait sa propre
    structure de brouillon et n'etait donc pas couverte. */
 let sidesFormSnapshot = '';
@@ -3793,6 +3843,15 @@ function updateCharCount(){
     document.getElementById('stationNotes').value.length + '/100';
 }
 document.getElementById('stationNotes').addEventListener('input', updateCharCount);
+
+/* Conservation de la saisie a chaque frappe, et surtout au moment ou l'ecran
+   s'eteint : visibilitychange et pagehide sont les derniers hooks fiables avant
+   qu'iOS puisse decharger l'onglet. */
+['observersInput','adultsInput','aonInput','stationNotes'].forEach(id=>{
+  document.getElementById(id).addEventListener('input', saveDraft);
+});
+document.addEventListener('visibilitychange', ()=>{ if(document.hidden) saveDraft(); });
+window.addEventListener('pagehide', saveDraft);
 
 function updateSubmitState(){
   const ready = stationSelect.value !== '';
@@ -3861,6 +3920,11 @@ document.getElementById('tallyUndo').addEventListener('click', ()=>{
 document.getElementById('tallyDone').addEventListener('click', ()=>{
   document.getElementById(tallyTarget+'Input').value = tallyValue;
   tallyOverlay.classList.remove('open');
+  // Ecriture par programme : aucun evenement input n'est emis, il faut donc
+  // conserver la saisie explicitement. Or le clicker est LE moyen d'entrer un
+  // comptage : sans cette ligne, le nombre le plus important serait le seul
+  // a ne pas survivre a une extinction d'ecran.
+  saveDraft();
 });
 document.getElementById('tallyCancel').addEventListener('click', ()=>{
   tallyOverlay.classList.remove('open');
@@ -3917,6 +3981,7 @@ document.getElementById('saveStation').addEventListener('click', ()=>{
   Object.keys(observations).forEach(k=>{
     toStore[k] = observations[k].map(({photos, ...rest})=> rest);
   });
+  clearDraft();                    // la saisie est enregistree, plus rien a restaurer
   saveStore(STORE_KEY, toStore);
   refreshAllMarkers();
   closeSheets();
@@ -3957,6 +4022,10 @@ document.getElementById('legend').addEventListener('click', ()=>{
 });
 
 locateMe(false);
+
+/* Restitution de la saisie en cours. En toute fin de script : la fiche de
+   station et son etat doivent etre entierement initialises. */
+restoreDraft();
 
 /* Pas de service worker : l'appli se recharge toujours depuis le reseau.
    On desinstalle celui qui aurait ete enregistre par une ancienne version. */
