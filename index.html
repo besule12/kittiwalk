@@ -88,6 +88,26 @@
   }
   #photoViewer.on{ display:flex; }
   #photoViewer img{ max-width:100%; max-height:100%; object-fit:contain; }
+  /* fiche admin d'une station */
+  #adminSheetInfo{ font-size:13px; line-height:1.7; color:var(--grey); }
+  #adminSheetInfo b{ color:var(--ink); font-weight:600; }
+  #adminPhotoPreview{ display:none; margin:0 0 10px; padding:0; }
+  #adminPhotoPreview.on{ display:block; }
+  #adminPhotoPreview img{
+    display:block; width:100%; height:auto;
+    border-radius:12px; border:1px solid var(--line);
+  }
+  .admin-pick{
+    display:block; text-align:center; cursor:pointer;
+    padding:12px; border-radius:12px;
+    border:1.5px dashed var(--line); background:var(--white);
+    font-size:14px; font-weight:600; color:var(--ink);
+  }
+  .admin-pick input{ display:none; }
+  #adminPhotoHint{
+    margin-top:8px; font-size:12px; line-height:1.55; color:var(--grey);
+  }
+  #adminArchiveBtn{ background:#FF2C2C; }
   #photoViewerClose{
     position:absolute; top:14px; right:14px;
     width:42px; height:42px; border-radius:50%;
@@ -806,6 +826,34 @@
   <button class="submit ready" id="cellEditorDone" style="width:100%;margin-top:12px;">OK</button>
 </div>
 
+<!-- ============ FICHE ADMIN D'UNE STATION ============ -->
+<div class="sheet" id="adminSheet">
+  <div class="sheet-handle"></div>
+  <div class="sheet-top">
+    <h1 id="adminSheetTitle">Station</h1>
+    <button class="close-x" id="closeAdminSheet">&#10005;</button>
+  </div>
+
+  <div class="card">
+    <h3>Station</h3>
+    <div id="adminSheetInfo"></div>
+  </div>
+
+  <div class="card">
+    <h3>Reference photo</h3>
+    <figure id="adminPhotoPreview">
+      <img id="adminPhotoImg" alt="">
+    </figure>
+    <label class="admin-pick" id="adminPhotoPick">
+      &#128247; Choose a photo
+      <input type="file" accept="image/*" id="adminPhotoFile">
+    </label>
+    <div id="adminPhotoHint"></div>
+  </div>
+
+  <button class="submit ready" id="adminArchiveBtn">Archive this station</button>
+</div>
+
 <div id="photoViewer">
   <img id="photoViewerImg" alt="">
   <button type="button" id="photoViewerClose">&#10005;</button>
@@ -929,7 +977,7 @@ const STATION_PLACES = {
 };
 
 /* ---------------- MODE ADMINISTRATEUR ----------------
-   Permet d'ajouter, deplacer et retirer des stations depuis l'appli, sans
+   Permet d'ajouter, photographier et archiver des stations depuis l'appli, sans
    editer le fichier a la main.
 
    Limite a enoncer clairement : les modifications sont enregistrees sur CET
@@ -945,21 +993,21 @@ const ADMIN_ON_KEY = 'kittiwalk_admin_on';
 const ADMIN_PASS   = 'krykkje';
 let adminMode = false;
 let pendingAdd = false;
-let stationEdits = loadStore(ADMIN_KEY, { added: [], removed: [], moved: {} });
+/* Le deplacement de station a ete retire : si une station bouge, on la recree.
+   Les anciens "moved" eventuellement stockes sont simplement ignores. */
+let stationEdits = loadStore(ADMIN_KEY, { added: [], removed: [] });
 if(!stationEdits.added)   stationEdits.added = [];
 if(!stationEdits.removed) stationEdits.removed = [];
-if(!stationEdits.moved)   stationEdits.moved = {};
+delete stationEdits.moved;
 
 function saveStationEdits(){ saveStore(ADMIN_KEY, stationEdits); }
 
 /* Liste effective : stations embarquees + ajouts de l'admin, moins les
-   retraits, avec les deplacements appliques. */
+   retraits. */
 function effectiveStations(){
   const removed = new Set(stationEdits.removed);
-  const moved = stationEdits.moved;
   return ALL_STATIONS.concat(stationEdits.added)
-    .filter(s=> !removed.has(s.station))
-    .map(s=> moved[s.station] ? Object.assign({}, s, moved[s.station]) : s);
+    .filter(s=> !removed.has(s.station));
 }
 
 /* Definition d'une station MEME si elle a ete retiree de la carte.
@@ -971,8 +1019,7 @@ function stationDefAny(code){
 }
 
 function adminPendingCount(){
-  return stationEdits.added.length + stationEdits.removed.length
-       + Object.keys(stationEdits.moved).length;
+  return stationEdits.added.length + stationEdits.removed.length;
 }
 // charg&#233;es depuis stations.json (modifiable sur GitHub sans toucher au code)
 
@@ -1129,18 +1176,9 @@ const anomalySelect = document.getElementById('anomalyStation');
 
 function buildStations(){
   STATIONS.forEach(st=>{
-    const m = L.marker([st.lat, st.lon],
-      { icon: makeStationIcon(st.station), draggable: adminMode }).addTo(map);
+    const m = L.marker([st.lat, st.lon], { icon: makeStationIcon(st.station) }).addTo(map);
     // en mode admin, toucher un marqueur ouvre les actions admin, pas le comptage
     m.on('click', ()=> adminMode ? openAdminStation(st.station) : openStationSheet(st.station));
-    if(adminMode){
-      m.on('dragend', ()=>{
-        const p = m.getLatLng();
-        stationEdits.moved[st.station] = { lat:+p.lat.toFixed(6), lon:+p.lng.toFixed(6) };
-        saveStationEdits(); updateAdminBar();
-        showToast('Station ' + st.station + ' deplacee');
-      });
-    }
     stationMarkers[st.station] = m;
     [stationSelect, anomalySelect].forEach(sel=>{
       const o = document.createElement('option');
@@ -3272,7 +3310,7 @@ document.querySelectorAll('.site-btn').forEach(b=>{
 function updateAdminBar(){
   const n = adminPendingCount();
   document.getElementById('adminStatus').textContent = n === 0
-    ? 'touche un marqueur pour le retirer, glisse-le pour le deplacer'
+    ? 'touche un marqueur pour sa photo ou pour l archiver'
     : n + ' modification(s) non publiee(s) : pense a exporter';
   document.getElementById('adminRestoreBtn').style.display =
     stationEdits.removed.length ? '' : 'none';
@@ -3283,13 +3321,13 @@ function activateAdmin(){
   adminMode = true;
   document.getElementById('adminBar').classList.add('on');
   document.getElementById('adminKeyBtn').classList.add('hidden');
-  applySite(currentSite);          // rebalaye les marqueurs en mode deplacable
+  applySite(currentSite);          // reconstruit les marqueurs en mode admin
   updateAdminBar();
 }
 
 function enterAdmin(){
   if(adminMode) return;
-  const p = prompt('Code administrateur\n\nPermet d ajouter, deplacer et retirer des stations.');
+  const p = prompt('Code administrateur\n\nPermet d ajouter, photographier et archiver des stations.');
   if(p === null) return;
   if(p.trim().toLowerCase() !== ADMIN_PASS){ showToast('Code incorrect'); return; }
   // On retient l'autorisation sur cet appareil : sans ca il fallait retaper le
@@ -3310,33 +3348,114 @@ function exitAdmin(){
   showToast('Mode administrateur quitte');
 }
 
-/* Actions sur une station existante */
+/* Photo choisie dans cette session, en attente de publication. Volontairement
+   NON stockee : une photo en base64 sature vite le stockage du navigateur. */
+const PHOTO_OVERRIDES = {};
+function photoUrlFor(code){
+  return PHOTO_OVERRIDES[code] || ('photos/' + encodeURIComponent(code) + '.jpg');
+}
+
+/* Redimensionne dans le navigateur a 1200 px de large et sous ~215 Ko. Une photo
+   de telephone fait 3 a 5 Mo : telles quelles, 62 stations rendraient l'appli
+   inutilisable en 4G sur le terrain. */
+function resizePhoto(file, cb){
+  const fr = new FileReader();
+  fr.onerror = ()=> showToast('Could not read that file');
+  fr.onload = ()=>{
+    const im = new Image();
+    im.onerror = ()=> showToast('That file is not a readable image');
+    im.onload = ()=>{
+      const r = Math.min(1, 1200 / im.width);
+      const c = document.createElement('canvas');
+      c.width = Math.round(im.width * r);
+      c.height = Math.round(im.height * r);
+      c.getContext('2d').drawImage(im, 0, 0, c.width, c.height);
+      let q = 0.82, url = c.toDataURL('image/jpeg', q);
+      // ~1,37 caractere de base64 par octet : 300 000 caracteres = ~215 Ko
+      while(url.length > 300000 && q > 0.4){ q -= 0.1; url = c.toDataURL('image/jpeg', q); }
+      cb(url, Math.round(url.length * 0.73 / 1024), c.width + 'x' + c.height);
+    };
+    im.src = fr.result;
+  };
+  fr.readAsDataURL(file);
+}
+
+/* Fiche admin d'une station : sa photo, ses informations, son archivage. */
+let adminStationCode = null;
+
 function openAdminStation(code){
   const def = stationDef(code);
   if(!def) return;
+  adminStationCode = code;
+  const lieu = STATION_PLACES[code];
   const cree = stationEdits.added.some(s=> s.station === code);
   const nbObs = (observations[code] || []).length;
-  let msg = 'Station ' + code + '\n'
-          + 'lat ' + def.lat + '   lon ' + def.lon + '\n'
-          + 'site : ' + siteOf(def) + (def.form === 'cliff' ? '   (formulaire falaise)' : '') + '\n'
-          + (cree ? 'ajoutee par un administrateur\n' : 'station d origine\n');
-  if(nbObs) msg += '\nATTENTION : ' + nbObs + ' observation(s) enregistree(s) sur cette station.\n'
-                 + 'Elles ne sont pas supprimees, mais la station disparait de la carte.\n';
-  msg += '\nElle sera ARCHIVEE, pas supprimee : "Restaurer" la remet, et elle\n'
-       + 'reste dans le referentiel exporte avec active:false, donc reactivable\n'
-       + 'une saison suivante.\n'
-       + '\nOK = archiver cette station\nAnnuler = ne rien faire';
+
+  document.getElementById('adminSheetTitle').textContent =
+    (/^[0-9]/.test(code) ? 'Station ' + code : code) + (lieu ? ' — ' + lieu : '');
+  document.getElementById('adminSheetInfo').innerHTML =
+      'lat <b>' + def.lat + '</b> &nbsp;&nbsp; lon <b>' + def.lon + '</b><br>'
+    + 'site: <b>' + siteOf(def) + '</b>' + (def.form === 'cliff' ? ' (cliff form)' : '') + '<br>'
+    + (cree ? 'added by an administrator' : 'original station')
+    + (nbObs ? '<br><b>' + nbObs + ' observation(s)</b> recorded &#8212; archiving keeps them' : '');
+
+  const fig = document.getElementById('adminPhotoPreview');
+  const img = document.getElementById('adminPhotoImg');
+  fig.classList.remove('on');
+  img.onload  = ()=> fig.classList.add('on');
+  img.onerror = ()=> fig.classList.remove('on');
+  img.src = photoUrlFor(code);
+  if(img.complete && img.naturalWidth > 0) fig.classList.add('on');
+
+  document.getElementById('adminPhotoHint').innerHTML = PHOTO_OVERRIDES[code]
+    ? '<b>' + code + '.jpg</b> was downloaded. Send it so it can be published — until then '
+      + 'the photo only exists on this phone.'
+    : 'The photo is resized automatically and downloaded as <b>' + code + '.jpg</b>, ready to be '
+      + 'published for everyone.';
+  document.getElementById('adminPhotoFile').value = '';
+  openSheet(document.getElementById('adminSheet'));
+}
+
+document.getElementById('adminPhotoFile').addEventListener('change', (e)=>{
+  const file = e.target.files && e.target.files[0];
+  const code = adminStationCode;
+  if(!file || !code) return;
+  resizePhoto(file, (url, ko, px)=>{
+    PHOTO_OVERRIDES[code] = url;
+    document.getElementById('adminPhotoImg').src = url;
+    document.getElementById('adminPhotoPreview').classList.add('on');
+    // telechargement sous le nom attendu par l'appli : plus rien a renommer
+    const a = document.createElement('a');
+    a.href = url; a.download = code + '.jpg'; a.click();
+    document.getElementById('adminPhotoHint').innerHTML =
+      '<b>' + code + '.jpg</b> — ' + px + ', ' + ko + ' KB — downloaded. Send it so it can be '
+      + 'published; until then the photo only exists on this phone.';
+    showToast(code + '.jpg ready (' + ko + ' KB)');
+  });
+});
+
+/* On archive, jamais on ne supprime -- y compris une station creee par un
+   administrateur. Un suivi pluriannuel doit pouvoir reactiver une station la
+   saison suivante, et ses observations passees la referencent. C'est deja la
+   convention du referentiel, ou 5 stations portent active:false. */
+document.getElementById('adminArchiveBtn').addEventListener('click', ()=>{
+  const code = adminStationCode;
+  if(!code) return;
+  const nbObs = (observations[code] || []).length;
+  let msg = 'Archive station ' + code + ' ?\n\n'
+          + 'It is archived, not deleted: "Restaurer" brings it back, and it stays in the\n'
+          + 'exported reference with active:false, so it can be reactivated next season.';
+  if(nbObs) msg += '\n\nIts ' + nbObs + ' observation(s) are kept.';
   if(!confirm(msg)) return;
-  // On archive, jamais on ne supprime -- y compris une station creee par un
-  // administrateur. Un suivi pluriannuel doit pouvoir reactiver une station
-  // l'annee suivante, et ses observations passees la referencent. C'est deja la
-  // convention du referentiel, ou 5 stations portent active:false.
   if(stationEdits.removed.indexOf(code) === -1) stationEdits.removed.push(code);
   saveStationEdits();
+  closeSheets();
   applySite(currentSite);
   updateAdminBar();
-  showToast('Station ' + code + ' archivee');
-}
+  showToast('Station ' + code + ' archived');
+});
+
+document.getElementById('closeAdminSheet').addEventListener('click', closeSheets);
 
 /* Ajout : on arme le bouton, puis on touche la carte a l'emplacement voulu */
 document.getElementById('adminAddBtn').addEventListener('click', ()=>{
@@ -3370,6 +3489,7 @@ map.on('click', (e)=>{
   applySite(currentSite);
   updateAdminBar();
   showToast('Station ' + code + ' ajoutee');
+  openAdminStation(code);   // enchaine sur sa fiche : la photo se pose tout de suite
 });
 
 /* Remet les stations retirees */
@@ -3392,10 +3512,7 @@ document.getElementById('adminExportBtn').addEventListener('click', ()=>{
   // la referencent perdent leurs coordonnees.
   const archivees = new Set(stationEdits.removed);
   const liste = ALL_STATIONS.concat(stationEdits.added).map(s=>{
-    const mv = stationEdits.moved[s.station];
-    const o = { station: s.station,
-                lat: mv ? mv.lat : s.lat,
-                lon: mv ? mv.lon : s.lon,
+    const o = { station: s.station, lat: s.lat, lon: s.lon,
                 active: archivees.has(s.station) ? false : (s.active !== false) };
     if(s.site) o.site = s.site;
     if(s.form) o.form = s.form;
@@ -3484,6 +3601,8 @@ function closeSheets(){
   if(ss) ss.classList.remove('open');
   const ce = document.getElementById('cellEditor');
   if(ce) ce.classList.remove('open');
+  const as = document.getElementById('adminSheet');
+  if(as) as.classList.remove('open');
 }
 /* Fermer en touchant le fond fait perdre la saisie en cours. Sur un telephone
    tenu d'une main, dehors, un appui a cote de la fiche arrive constamment : on
@@ -3546,7 +3665,7 @@ function renderStationPhoto(code){
   img.onerror = ()=> fig.classList.remove('on');   // pas de photo : rien ne s'affiche
   img.alt = lieu ? (code + ' - ' + lieu) : code;
   cap.textContent = lieu || '';
-  img.src = 'photos/' + encodeURIComponent(code) + '.jpg';
+  img.src = photoUrlFor(code);   // tient compte d'une photo choisie a l'instant
   // image deja en cache : onload ne se declenche pas, on verifie donc aussi ici
   if(img.complete && img.naturalWidth > 0) montre();
 }
