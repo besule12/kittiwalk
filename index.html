@@ -65,6 +65,35 @@
   }
   #lastObsInfo:empty{ display:none; }
   #lastObsInfo b{ color:var(--ink); font-weight:600; }
+  /* Photo de reperage : ou est la station, ou regarder. Remplace le classeur
+     plastique sorti sous la pluie. Chargee seulement a l'ouverture de la fiche. */
+  #stationRefPhoto{
+    display:none; margin:8px 0 0; padding:0;
+    border-radius:12px; overflow:hidden;
+    border:1px solid var(--line); background:var(--card);
+  }
+  #stationRefPhoto.on{ display:block; }
+  #stationRefPhoto img{
+    display:block; width:100%; height:auto; cursor:zoom-in;
+    -webkit-touch-callout:none;
+  }
+  #stationRefPhoto figcaption{
+    padding:7px 12px; font-size:12.5px; color:var(--grey);
+  }
+  /* Plein ecran, pour lire les details d'une facade a bout de bras */
+  #photoViewer{
+    display:none; position:fixed; inset:0; z-index:4000;
+    background:rgba(0,0,0,0.92);
+    align-items:center; justify-content:center;
+  }
+  #photoViewer.on{ display:flex; }
+  #photoViewer img{ max-width:100%; max-height:100%; object-fit:contain; }
+  #photoViewerClose{
+    position:absolute; top:14px; right:14px;
+    width:42px; height:42px; border-radius:50%;
+    border:0; background:rgba(255,255,255,0.9); color:var(--ink);
+    font-size:20px; cursor:pointer;
+  }
   /* bascule entre les deux sites de comptage (centre-ville / falaises) */
   .site-switch{
     display:flex; background:var(--white);
@@ -664,6 +693,10 @@
       <option value="" disabled selected>What station are you at?</option>
     </select>
     <div id="lastObsInfo"></div>
+    <figure id="stationRefPhoto">
+      <img id="stationRefImg" alt="" loading="lazy">
+      <figcaption id="stationRefCaption"></figcaption>
+    </figure>
   </div>
 
   <div class="card">
@@ -769,6 +802,11 @@
   <button class="submit ready" id="cellEditorDone" style="width:100%;margin-top:12px;">OK</button>
 </div>
 
+<div id="photoViewer">
+  <img id="photoViewerImg" alt="">
+  <button type="button" id="photoViewerClose">&#10005;</button>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <!-- ============ COMPTEUR PLEIN &#201;CRAN ============ -->
@@ -817,6 +855,75 @@ let ALL_STATIONS = [];  // toutes, tous sites, y compris les inactives (archives
 let currentSite = 'city';
 function siteOf(st){ return st.site || 'city'; }
 
+/* Nom du lieu de chaque station, tire des fiches photo RISSA 2026. L'appli
+   n'affichait qu'un numero ; un benevole qui cherche un batiment lit mieux
+   "Station 12 - Austadplassen painted wall". Sert aussi aux stations pas
+   encore creees, donc le nom apparait des qu'un administrateur les ajoute. */
+const STATION_PLACES = {
+  '1': 'Tourist Shop',
+  '2': 'NN Kunst Museum',
+  '2b': 'Enter Adventures',
+  '3': 'Kaigata 3',
+  '4': 'Troll Museum',
+  '6': 'Norconsult',
+  '6a': 'Lotus restaurant',
+  '8': 'Helsehuset',
+  '8b': 'Specsavers',
+  '9': 'Full Steam seaside south',
+  '10': 'S\u00f8ndre Tollbodgate 7',
+  '11': 'Full Steam seaside north',
+  '12': 'Austadplassen painted wall',
+  '12a': 'S\u00f8ndre Tollbodgate 1',
+  '13a': 'Full Steam back',
+  '13b': 'UMT',
+  '13c': 'Volvat',
+  '14': 'Unilabs',
+  '14a': 'Havnegata parking',
+  '15': 'Elefant Indisk',
+  '15a': 'NAV',
+  '15c': 'Rema 1000',
+  '15d': 'Caritas',
+  '16': 'Solid',
+  '16a': 'Gr\u00f8nnegata 71 AAGAR',
+  '16b': 'Intersport',
+  '16c': 'Vintage shop',
+  '16d': 'Above gift shop',
+  '16f': 'DNB sign',
+  '16g': 'JM Hansen',
+  '16h': 'Microsoft',
+  '17': 'Agenturet',
+  '19': 'O.L. Aune',
+  '20b': 'Small alley, 4-6 Sj\u00f8gata',
+  '20c': 'Tang restaurant',
+  '20d': '4 and 6 Sj\u00f8gata',
+  '20e': 'Folkeuniversitet',
+  '21': 'Radisson',
+  '22': 'Domkirke',
+  '23': 'Storgata 10',
+  '24': 'DRIV',
+  '25': 'Strandgata brick wall',
+  '26b': 'Brun og Bild',
+  '26c': 'Gjenbruken-Second hand',
+  '28': 'Cubus antennas',
+  '28b': 'Nerstranda seaside',
+  '29': 'Mack Storgata',
+  '30': 'Fylkeshuset face',
+  '31': 'Fylkeshuset back south.',
+  '31a': 'Fylkeshuset back north.',
+  '31b': 'Nettskolen',
+  '31c': 'Mellomvegen 40 back',
+  '31d': 'St Elisabeth Hotel',
+  '32': 'Fylkeshuset tower',
+  '32a': 'Strandvegen8 street side',
+  '32b': 'Strandvegen 13',
+  '32c': 'Strandvegen 8 roof',
+  '32d': 'Stranvegen 15B',
+  '32e': 'Fram Strandvegen',
+  '32f': 'Fram back',
+  '33': 'Norsk Folkehjelp roof and back',
+  '34': 'Skateetaten logos',
+};
+
 /* ---------------- MODE ADMINISTRATEUR ----------------
    Permet d'ajouter, deplacer et retirer des stations depuis l'appli, sans
    editer le fichier a la main.
@@ -828,6 +935,7 @@ function siteOf(st){ return st.site || 'city'; }
 
    Le mot de passe n'est pas une securite : le code de l'appli est public, donc
    lisible. Il evite seulement qu'un benevole entre dans ce mode par hasard. */
+
 const ADMIN_KEY    = 'kittiwalk_stations_admin_v1';
 const ADMIN_ON_KEY = 'kittiwalk_admin_on';
 const ADMIN_PASS   = 'krykkje';
@@ -874,6 +982,21 @@ function loadStore(key, fallback){
 function saveStore(key, data){
   try{ localStorage.setItem(key, JSON.stringify(data)); }
   catch(e){ /* quota plein : on continue en m&#233;moire */ }
+}
+
+/* Certains contextes REFUSENT localStorage : navigation privee sur Safari,
+   navigateurs integres, pages servies en data:. Un acces direct y leve une
+   exception qui arrete tout le script, et l'appli meurt sans un mot. Ces trois
+   fonctions ne jettent jamais ; au pire l'appli tourne en memoire pour la
+   session. */
+function rawGet(key){
+  try{ return localStorage.getItem(key); } catch(e){ return null; }
+}
+function rawSet(key, val){
+  try{ localStorage.setItem(key, val); return true; } catch(e){ return false; }
+}
+function rawRemove(key){
+  try{ localStorage.removeItem(key); } catch(e){}
 }
 
 /* Identifiant unique d'observation. Indispensable pour une synchronisation
@@ -1018,10 +1141,13 @@ function buildStations(){
     [stationSelect, anomalySelect].forEach(sel=>{
       const o = document.createElement('option');
       o.value = st.station;
-      // "Station 12" pour les codes numeriques, "Cliff 1" tel quel pour les autres
-      o.textContent = /^[0-9]/.test(st.station)
+      // "Station 12" pour les codes numeriques, "Cliff 1" tel quel pour les autres,
+      // suivi du nom du lieu quand on le connait : plus parlant qu'un numero.
+      const base = /^[0-9]/.test(st.station)
         ? 'Station ' + st.station
         : st.station.charAt(0).toUpperCase() + st.station.slice(1);
+      const lieu = STATION_PLACES[st.station];
+      o.textContent = lieu ? (base + ' — ' + lieu) : base;
       sel.appendChild(o);
     });
   });
@@ -3115,6 +3241,19 @@ applySite(currentSite);
   sel.addEventListener('change', ()=> sel.classList.add('filled'));
 });
 
+/* Plein ecran de la photo de reperage : dehors, a bout de bras, la vignette ne
+   suffit pas pour reconnaitre une corniche sur une facade. */
+(function(){
+  const v = document.getElementById('photoViewer');
+  const vi = document.getElementById('photoViewerImg');
+  const ferme = ()=> v.classList.remove('on');
+  document.getElementById('stationRefImg').addEventListener('click', (e)=>{
+    vi.src = e.target.src; v.classList.add('on');
+  });
+  document.getElementById('photoViewerClose').addEventListener('click', ferme);
+  v.addEventListener('click', (e)=>{ if(e.target !== vi) ferme(); });
+})();
+
 /* Bascule centre-ville / falaises */
 document.querySelectorAll('.site-btn').forEach(b=>{
   b.addEventListener('click', ()=>{
@@ -3151,7 +3290,7 @@ function enterAdmin(){
   if(p.trim().toLowerCase() !== ADMIN_PASS){ showToast('Code incorrect'); return; }
   // On retient l'autorisation sur cet appareil : sans ca il fallait retaper le
   // mot de passe a chaque ouverture de l'appli, et le mode semblait disparu.
-  try{ localStorage.setItem(ADMIN_ON_KEY, '1'); }catch(e){}
+  rawSet(ADMIN_ON_KEY, '1');
   closeSheets();
   activateAdmin();
   showToast('Mode administrateur actif');
@@ -3159,7 +3298,7 @@ function enterAdmin(){
 
 function exitAdmin(){
   adminMode = false; pendingAdd = false;
-  try{ localStorage.removeItem(ADMIN_ON_KEY); }catch(e){}
+  rawRemove(ADMIN_ON_KEY);
   document.getElementById('adminAddBtn').classList.remove('armed');
   document.getElementById('adminBar').classList.remove('on');
   document.getElementById('adminKeyBtn').classList.remove('hidden');
@@ -3277,7 +3416,7 @@ document.getElementById('adminExitBtn').addEventListener('click', exitAdmin);
    revient a chaque ouverture jusqu'au clic sur Quitter. */
 document.getElementById('adminKeyBtn').addEventListener('click', enterAdmin);
 
-if(localStorage.getItem(ADMIN_ON_KEY) === '1') activateAdmin();
+if(rawGet(ADMIN_ON_KEY) === '1') activateAdmin();
 else if(/[?&]admin=1/.test(location.search)) enterAdmin();
 
 /* ================= EXPORT CSV (donnees reutilisables) =================
@@ -3388,8 +3527,26 @@ function renderLastObsInfo(code){
                + (list.length > 1 ? ' &#8212; <b>' + list.length + ' rounds</b> recorded' : '');
 }
 
+/* Photo de reperage de la station : ou elle se trouve, ou regarder.
+   Convention : photos/<code>.jpg. Une station sans photo masque simplement le
+   bloc, donc ajouter un fichier suffit, sans toucher au code. */
+function renderStationPhoto(code){
+  const fig = document.getElementById('stationRefPhoto');
+  const img = document.getElementById('stationRefImg');
+  const cap = document.getElementById('stationRefCaption');
+  if(!fig) return;
+  const lieu = STATION_PLACES[code];
+  fig.classList.remove('on');
+  img.onload  = ()=> fig.classList.add('on');
+  img.onerror = ()=> fig.classList.remove('on');   // pas de photo : rien ne s'affiche
+  img.alt = lieu ? (code + ' - ' + lieu) : code;
+  cap.textContent = lieu || '';
+  img.src = 'photos/' + encodeURIComponent(code) + '.jpg';
+}
+
 /* Remplit les champs avec la derniere observation connue de la station. */
 function fillStationForm(code){
+  renderStationPhoto(code);
   renderLastObsInfo(code);
   const ex = latestObs(code);
   document.getElementById('observersInput').value = ex ? ex.observers : '';
